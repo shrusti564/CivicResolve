@@ -1,0 +1,61 @@
+{
+  "retrieved_at": "2026-11-18T06:22:32.361051+00:00",
+  "datasets": [
+    {
+      "title": "I Change My City Bengaluru civic complaints 2019-2022",
+      "file": "bengaluru_icmc_complaints_2019_2022.csv",
+      "url": "https://raw.githubusercontent.com/Vaibhav-code15/Bengaluru-Municipality-Issue-Analysis/main/data/a60abf5c-3a15-4967-af32-c3074248580f.csv",
+      "status": "downloaded",
+      "records_reported_by_source": 16071,
+      "period": "2019-01 to 2022-12",
+      "note": "Community research repository mirror; attribute original OpenCity / I Change My City / Janaagraha and the repository. Inspect licence and dataset terms before redistribution."
+    },
+    {
+      "query": "BBMP Grievances Data",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "query": "BBMP Fix My Street Data",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "query": "BBMP Ward Information",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "query": "Bengaluru Streetlights",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "query": "BBMP Solid Waste Management Data",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "query": "Flooding Locations in Bengaluru Urban",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "query": "BBMP Work Orders 2023-24",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "query": "BDA Jurisdiction and Boundary",
+      "status": "failed",
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "title": "Greater Bengaluru Wards 2025",
+      "file": "gba_wards_2025.geojson",
+      "url": "https://pub-0429b8e3b5a946e69ea007df844a6f1c.r2.dev/admin/wards-bengaluru-gba/wards_bengaluru_gba.geojson",
+      "license": "CC0-1.0",
+      "status": "downloaded"
+    }
+  ]
+}

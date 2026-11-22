@@ -1,0 +1,11 @@
+dataset_name,source,format_expected,project_use,temporal_or_scope_note
+BBMP Grievances Data,https://data.opencity.in/,CSV,Historical ward-level complaint analytics,Historical ward IDs; do not assume current ward crosswalk
+BBMP Fix My Street Data,https://data.opencity.in/,CSV/KML,Pothole complaint trends,Catalogue describes May-June 2022 and aggregate data
+BBMP Ward Information,https://data.opencity.in/,CSV/KML/PDF,Ward reference metadata,Check boundary vintage
+Bengaluru Streetlights,https://data.opencity.in/,CSV/KML,Streetlight infrastructure context,Check coverage and update date
+BBMP Solid Waste Management Data,https://data.opencity.in/,CSV/KML,Waste infrastructure context,Check coverage and update date
+Flooding Locations in Bengaluru Urban,https://data.opencity.in/,KML,Known flood hotspot map,Not a live flood feed
+BBMP Work Orders 2023-24,https://data.opencity.in/,CSV,Historical repair/maintenance analysis,Historical financial year
+BDA Jurisdiction and Boundary,https://data.opencity.in/,GeoJSON,Planning jurisdiction context,Not a substitute for municipal ward authority
+Greater Bengaluru Wards 2025 (369 wards),https://bharatlas.com/layers,GeoJSON,GPS point-in-polygon ward mapping,New GBA boundary vintage; verify attributes before deployment
+I Change My City Bengaluru civic complaints 2019-2022,https://github.com/Vaibhav-code15/Bengaluru-Municipality-Issue-Analysis,CSV,Historical complaint category agency ward and status analytics,2019-2022; 16071 records reported by repository; not live

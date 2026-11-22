@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+data/civicresolve.db
+data/raw/*
+!data/raw/.gitkeep
+uploads/*
+!uploads/.gitkeep

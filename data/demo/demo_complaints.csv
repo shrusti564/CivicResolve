@@ -1,0 +1,7 @@
+reference,title,category,priority,status,created_at,data_type
+DEMO-001,Pothole near sample junction,Roads & potholes,High,Submitted,2026-11-02,synthetic_demo
+DEMO-002,Garbage collection delay,Garbage & waste,Medium,In Progress,2026-11-04,synthetic_demo
+DEMO-003,Streetlight not working,Streetlights,Medium,Under Review,2026-11-06,synthetic_demo
+DEMO-004,Water leakage reported,Water supply,High,Resolved,2026-11-08,synthetic_demo
+DEMO-005,Waterlogging after rain,Drainage & flooding,Urgent,Submitted,2026-11-10,synthetic_demo
+DEMO-006,Road surface damage,Roads & potholes,Low,Resolved,2026-11-12,synthetic_demo
