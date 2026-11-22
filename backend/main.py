@@ -23,9 +23,22 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / '.env')
 UPLOADS = ROOT / 'uploads'
 UPLOADS.mkdir(exist_ok=True)
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 app = FastAPI(title='CivicResolve API', version='1.0.0', description='Bengaluru civic assistance and grievance intelligence')
 app.mount('/static', StaticFiles(directory=ROOT / 'frontend'), name='static')
 app.mount('/uploads', StaticFiles(directory=UPLOADS), name='uploads')
+
+def _citation_metadata(source_path):
+    import json
+    registry = ROOT / 'data' / 'knowledge_base' / 'sources.json'
+    if not registry.exists():
+        return {}
+    try:
+        entries = json.loads(registry.read_text(encoding='utf-8'))
+        source_name = str(source_path).replace('\\', '/')
+        return next((item for item in entries if item.get('file') in {source_name, Path(source_name).name}), {})
+    except (ValueError, OSError):
+        return {}
 
 @app.on_event('startup')
 def startup():
@@ -76,8 +89,16 @@ async def submit_complaint(title: str = Form(...), description: str = Form(...),
     if image and image.filename:
         ext = Path(image.filename).suffix.lower()
         if ext not in {'.jpg','.jpeg','.png','.webp'}: raise HTTPException(400, 'Only JPG, PNG and WEBP images are supported')
+        image_bytes = await image.read(MAX_IMAGE_BYTES + 1)
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            raise HTTPException(413, 'Image must be 5 MB or smaller')
+        signatures = {'.jpg': (b'\xff\xd8\xff',), '.jpeg': (b'\xff\xd8\xff',), '.png': (b'\x89PNG\r\n\x1a\n',), '.webp': (b'RIFF',)}
+        valid_signature = any(image_bytes.startswith(sig) for sig in signatures[ext])
+        if ext == '.webp':
+            valid_signature = valid_signature and image_bytes[8:12] == b'WEBP'
+        if not valid_signature:
+            raise HTTPException(400, 'Image content does not match its file type')
         filename = f"{uuid.uuid4().hex}{ext}"
-        image_bytes = await image.read()
         (UPLOADS / filename).write_bytes(image_bytes)
         image_path = f"/uploads/{filename}"
         # Optional vision analysis; if no API key is configured, the photo is simply attached.
@@ -107,8 +128,6 @@ def change_status(cid:int, body:StatusUpdate):
     if body.status not in {'Submitted','Under Review','In Progress','Resolved','Rejected'}: raise HTTPException(400,'Invalid status')
     if not update_status(cid, body.status): raise HTTPException(404,'Complaint not found')
     return get_complaint_by_id(cid)
-
-@app.get('/api/dashboard')
 
 @app.get("/api/dashboard/historical")
 def historical_dashboard():
@@ -183,7 +202,7 @@ def ask(body:AskRequest):
             answer=None
     if not answer:
         answer="I found these potentially relevant passages in the local knowledge base. Review the cited source documents before acting:\n\n" + '\n\n'.join(f"[{i+1}] {h['text'][:700]}" for i,h in enumerate(hits[:3]))
-    return {"answer":answer,"sources":[{"citation":i+1,"source":h['source'],"path":h['path'],"chunk_id":h['chunk_id']} for i,h in enumerate(hits)],"grounded":True}
+    return {"answer":answer,"sources":[{"citation":i+1,"source":h['source'],"path":h['path'],"chunk_id":h['chunk_id'],"url":_citation_metadata(h['path']).get('url', _citation_metadata(h['path']).get('source_url'))} for i,h in enumerate(hits)],"grounded":True}
 
 @app.post('/api/rag/ingest')
 def ingest(): return ingest_knowledge()

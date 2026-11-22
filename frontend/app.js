@@ -19,9 +19,16 @@ function escapeHtml(value) {
 
 async function api(url, options = {}) {
     const response = await fetch(API + url, options);
-    const data = await response.json();
+    const contentType = response.headers.get("content-type") || "";
+    let data = {};
+    if (contentType.includes("application/json")) {
+        try { data = await response.json(); } catch { data = {}; }
+    } else {
+        const text = await response.text();
+        data = { detail: text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240) };
+    }
     if (!response.ok) {
-        throw new Error(data.detail || "API request failed");
+        throw new Error(data.detail || `Request failed (${response.status})`);
     }
     return data;
 }
@@ -46,14 +53,15 @@ function initCitizenMap() {
 }
 
 async function setLocation(lat, lon, source = "gps") {
+    if (!$("latitude") || !$("longitude")) return;
     $("latitude").value = Number(lat).toFixed(7);
     $("longitude").value = Number(lon).toFixed(7);
-    $("location_source").value = source;
+    if ($("location_source")) $("location_source").value = source;
 
-    $("coords").textContent =
+    if ($("coords")) $("coords").textContent =
         `Latitude ${lat.toFixed(5)} · Longitude ${lon.toFixed(5)}`;
 
-    $("locationStatus").textContent = "Identifying Bengaluru ward...";
+    if ($("locationStatus")) $("locationStatus").textContent = "Identifying Bengaluru ward...";
 
     if (citizenMap) {
         citizenMap.setView([lat, lon], 16);
@@ -67,16 +75,16 @@ async function setLocation(lat, lon, source = "gps") {
             `/api/geo/ward?latitude=${lat}&longitude=${lon}`
         );
 
-        $("wardResult").textContent = result.matched
+        if ($("wardResult")) $("wardResult").textContent = result.matched
             ? `Ward: ${result.ward_name} · Corporation: ${result.corporation} · Zone: ${result.zone}`
             : result.reason;
 
     } catch (error) {
-        $("wardResult").textContent =
+        if ($("wardResult")) $("wardResult").textContent =
             "Ward lookup unavailable. Coordinates are retained.";
     }
 
-    $("locationStatus").textContent = "Location selected.";
+    if ($("locationStatus")) $("locationStatus").textContent = "Location selected.";
 
     // Reverse geocoding after explicit location selection.
     try {
@@ -104,7 +112,7 @@ function initCitizen() {
 
     initCitizenMap();
 
-    $("gpsBtn").addEventListener("click", () => {
+    $("gpsBtn")?.addEventListener("click", () => {
         if (!navigator.geolocation) {
             $("locationStatus").textContent =
                 "GPS is not supported by this browser.";
@@ -131,15 +139,14 @@ function initCitizen() {
         );
     });
 
-    $("latitude").addEventListener("change", manualCoords);
-    $("longitude").addEventListener("change", manualCoords);
+    $("latitude")?.addEventListener("change", manualCoords);
+    $("longitude")?.addEventListener("change", manualCoords);
 
     $("complaintForm").addEventListener("submit", async e => {
         e.preventDefault();
 
         const button = e.submitter;
-        button.disabled = true;
-        button.textContent = "Submitting...";
+        if (button) { button.disabled = true; button.textContent = "Submitting..."; }
 
         try {
             const formData = new FormData(e.currentTarget);
@@ -175,15 +182,15 @@ function initCitizen() {
             $("submitMessage").className = "form-message error";
             $("submitMessage").textContent = error.message;
         } finally {
-            button.disabled = false;
-            button.innerHTML = "Submit complaint <span>→</span>";
+            if (button) { button.disabled = false; button.innerHTML = "Submit complaint <span>→</span>"; }
         }
     });
 
-    $("askForm").addEventListener("submit", async e => {
+    $("askForm")?.addEventListener("submit", async e => {
         e.preventDefault();
 
         const box = $("answerBox");
+        if (!box) return;
         box.classList.remove("hidden");
         box.textContent = "Searching indexed documents...";
 
@@ -199,7 +206,7 @@ function initCitizen() {
             box.textContent =
                 result.answer + "\n\nSources:\n" +
                 (result.sources || []).map(
-                    s => `[${s.citation}] ${s.source} · ${s.path}`
+                    s => `[${s.citation}] ${s.source} · ${s.path}${s.url ? ` · ${s.url}` : ""}`
                 ).join("\n");
 
         } catch (error) {
@@ -236,7 +243,7 @@ async function loadRecent() {
         `).join("") || "No complaints submitted yet.";
 
     } catch (error) {
-        console.error(error);
+        $("recentList").textContent = `Could not load recent complaints: ${error.message}`;
     }
 }
 
@@ -247,9 +254,9 @@ function initAdmin() {
 
     initAdminMap();
 
-    $("refreshBtn").addEventListener("click", refreshDashboard);
+    $("refreshBtn")?.addEventListener("click", refreshDashboard);
 
-    $("ingestBtn").addEventListener("click", async () => {
+    $("ingestBtn")?.addEventListener("click", async () => {
         const button = $("ingestBtn");
         button.disabled = true;
         button.textContent = "Indexing...";
@@ -268,7 +275,7 @@ function initAdmin() {
         }
     });
 
-    $("tableSearch").addEventListener("input", loadTable);
+    $("tableSearch")?.addEventListener("input", loadTable);
 
     refreshDashboard();
     loadTable();
@@ -300,9 +307,11 @@ async function refreshDashboard() {
 
         const notice = $("demoNotice");
 
+        if (notice) {
         notice.classList.remove("hidden");
         notice.textContent =
             "HISTORICAL ANALYTICS · Bengaluru complaints, 2019–2022. These are not live CivicResolve submissions.";
+        }
 
         drawChart(
             "categoryChart",
@@ -328,7 +337,11 @@ async function refreshDashboard() {
         await loadMapLayers();
 
     } catch (error) {
-        console.error("Historical dashboard error:", error);
+        ["kpiTotal", "kpiOpen", "kpiResolved", "kpiRate", "kpiMonth", "kpiGeo"].forEach(id => {
+            if ($(id)) $(id).textContent = "Unavailable";
+        });
+        const notice = $("demoNotice");
+        if (notice) { notice.classList.remove("hidden"); notice.textContent = `Historical dashboard unavailable: ${error.message}`; }
     }
 }
 
@@ -385,7 +398,7 @@ function drawChart(id, type, labels, values) {
 async function loadTable() {
     if (!$("complaintRows")) return;
 
-    const query = $("tableSearch").value.toLowerCase();
+    const query = ($("tableSearch")?.value || "").toLowerCase();
 
     try {
         const rows = await api("/api/complaints");
@@ -419,7 +432,7 @@ async function loadTable() {
 
     } catch (error) {
         $("complaintRows").innerHTML =
-            '<tr><td colspan="7">Could not load complaints.</td></tr>';
+            `<tr><td colspan="7">Could not load live complaints: ${escapeHtml(error.message)}</td></tr>`;
     }
 }
 
@@ -433,7 +446,17 @@ window.updateComplaintStatus = async (id, status) => {
 
         await loadTable();
     } catch (error) {
-        alert(error.message);
+        await loadTable();
+        const rows = $("complaintRows");
+        if (rows) {
+            const message = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 7;
+            cell.className = "error";
+            cell.textContent = `Status update failed: ${error.message}`;
+            message.appendChild(cell);
+            rows.prepend(message);
+        }
     }
 };
 

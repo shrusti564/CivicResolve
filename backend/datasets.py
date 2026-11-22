@@ -19,5 +19,12 @@ def inventory():
                         item['columns']=list(df.columns)
                     except Exception: item['columns']=[]
                 items.append(item)
-    manifest=json.loads(MANIFEST.read_text()) if MANIFEST.exists() else []
+    manifest=json.loads(MANIFEST.read_text(encoding='utf-8')) if MANIFEST.exists() else {"datasets": []}
+    sources = manifest.get('datasets', []) if isinstance(manifest, dict) else manifest
+    local_names = {item['file'] for item in items}
+    for source in sources:
+        filename = source.get('file')
+        source['local_file_available'] = bool(filename and filename in local_names)
+        if not source['local_file_available'] and source.get('status') == 'downloaded':
+            source['status'] = 'missing_locally'
     return {"files":items,"sources":manifest}

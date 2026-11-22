@@ -1,7 +1,7 @@
 """Download selected public Bengaluru datasets from OpenCity CKAN and GBA ward GeoJSON."""
 from pathlib import Path
 from datetime import datetime, timezone
-import json, re, urllib.request, urllib.parse
+import hashlib, json, re, urllib.request, urllib.parse
 
 ROOT=Path(__file__).resolve().parents[1]
 RAW=ROOT/'data'/'raw'; RAW.mkdir(parents=True,exist_ok=True)
@@ -18,14 +18,21 @@ def get_json(url):
 
 def safe(s): return re.sub(r'[^a-z0-9]+','_',s.lower()).strip('_')[:70]
 
+def download(url, dest, timeout=60):
+    req=urllib.request.Request(url,headers={'User-Agent':'CivicResolve-Student-Project/1.0'})
+    with urllib.request.urlopen(req,timeout=timeout) as response:
+        data=response.read()
+    if not data: raise ValueError('Source returned an empty file')
+    dest.write_bytes(data)
+    return hashlib.sha256(data).hexdigest(), len(data)
+
 def main():
     manifest=[]
     # Public research copy of the I Change My City Bengaluru complaint log (2019-2022; 16,071 rows).
     complaint_url='https://raw.githubusercontent.com/Vaibhav-code15/Bengaluru-Municipality-Issue-Analysis/main/data/a60abf5c-3a15-4967-af32-c3074248580f.csv'
     try:
-        req=urllib.request.Request(complaint_url,headers={'User-Agent':'CivicResolve-Student-Project/1.0'})
-        with urllib.request.urlopen(req,timeout=90) as r, (RAW/'bengaluru_icmc_complaints_2019_2022.csv').open('wb') as out: out.write(r.read())
-        manifest.append({'title':'I Change My City Bengaluru civic complaints 2019-2022','file':'bengaluru_icmc_complaints_2019_2022.csv','url':complaint_url,'status':'downloaded','records_reported_by_source':16071,'period':'2019-01 to 2022-12','note':'Community research repository mirror; attribute original OpenCity / I Change My City / Janaagraha and the repository. Inspect licence and dataset terms before redistribution.'})
+        filename='bengaluru_icmc_complaints_2019_2022.csv'; checksum,size=download(complaint_url,RAW/filename,90)
+        manifest.append({'title':'I Change My City Bengaluru civic complaints 2019-2022','file':filename,'url':complaint_url,'license':'Unverified; consult source terms','status':'downloaded','retrieved_at':datetime.now(timezone.utc).isoformat(),'sha256':checksum,'size_bytes':size,'records_reported_by_source':16071,'period':'2019-01 to 2022-12','note':'Community research repository mirror; attribute original OpenCity / I Change My City / Janaagraha and the repository. Inspect licence and dataset terms before redistribution.'})
         print('DOWNLOADED: bengaluru_icmc_complaints_2019_2022.csv')
     except Exception as e:
         manifest.append({'title':'I Change My City Bengaluru civic complaints 2019-2022','url':complaint_url,'status':'failed','error':str(e)})
@@ -52,22 +59,29 @@ def main():
                     req=urllib.request.Request(url,headers={'User-Agent':'CivicResolve-Student-Project/1.0'})
                     with urllib.request.urlopen(req,timeout=90) as response, dest.open('wb') as out:
                         out.write(response.read())
-                    downloaded.append({'file':name,'url':url,'format':fmt,'license':detail.get('license_title')})
+                    checksum=hashlib.sha256(dest.read_bytes()).hexdigest()
+                    downloaded.append({'file':name,'url':url,'format':fmt,'license':detail.get('license_title'),'status':'downloaded','retrieved_at':datetime.now(timezone.utc).isoformat(),'sha256':checksum,'size_bytes':dest.stat().st_size})
                     print('DOWNLOADED:',name)
-                except Exception as e: print('RESOURCE FAILED:',url,e)
-            manifest.append({'query':query,'title':detail.get('title'),'package_url':detail.get('url'),'license':detail.get('license_title'),'downloaded':downloaded,'status':'downloaded' if downloaded else 'no_resource_downloaded'})
+                except Exception as e:
+                    downloaded.append({'name':res.get('name'),'url':url,'status':'failed','error':str(e)})
+                    print('RESOURCE FAILED:',url,e)
+            manifest.append({'query':query,'title':detail.get('title'),'package_url':detail.get('url'),'license':detail.get('license_title'),'resources':downloaded,'status':'downloaded' if any(r.get('status') == 'downloaded' for r in downloaded) else 'no_resource_downloaded'})
         except Exception as e:
             manifest.append({'query':query,'status':'failed','error':str(e)}); print('FAILED:',query,e)
     # Current GBA 2025 ward boundary layer: 369 wards, CC0 listing on Bharatlas.
     ward_url='https://pub-0429b8e3b5a946e69ea007df844a6f1c.r2.dev/admin/wards-bengaluru-gba/wards_bengaluru_gba.geojson'
     try:
-        req=urllib.request.Request(ward_url,headers={'User-Agent':'CivicResolve-Student-Project/1.0'})
-        with urllib.request.urlopen(req,timeout=90) as r, (RAW/'gba_wards_2025.geojson').open('wb') as out: out.write(r.read())
-        manifest.append({'title':'Greater Bengaluru Wards 2025','file':'gba_wards_2025.geojson','url':ward_url,'license':'CC0-1.0','status':'downloaded'})
+        filename='gba_wards_2025.geojson'; checksum,size=download(ward_url,RAW/filename,90)
+        manifest.append({'title':'Greater Bengaluru Wards 2025','file':filename,'url':ward_url,'license':'CC0-1.0','status':'downloaded','retrieved_at':datetime.now(timezone.utc).isoformat(),'sha256':checksum,'size_bytes':size})
         print('DOWNLOADED: gba_wards_2025.geojson')
     except Exception as e:
         manifest.append({'title':'Greater Bengaluru Wards 2025','url':ward_url,'status':'failed','error':str(e)})
         print('WARD BOUNDARY DOWNLOAD FAILED:',e)
+    # Retain prior manifest metadata and inventory locally present files even after a failed refresh.
+    for item in manifest:
+        filename=item.get('file')
+        if filename and (RAW/filename).exists() and item.get('status') != 'downloaded':
+            item['local_file_available']=True
     (ROOT/'data'/'dataset_manifest.json').write_text(json.dumps({'retrieved_at':datetime.now(timezone.utc).isoformat(),'datasets':manifest},indent=2),encoding='utf-8')
     print('\nFinished. See data/dataset_manifest.json and data/raw/.')
 

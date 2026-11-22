@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import json
 from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -21,6 +22,19 @@ def read_document(path: Path):
     return ""
 
 
+def document_metadata(path: Path):
+    """Read optional source details from data/knowledge_base/sources.json."""
+    registry = ROOT / "data" / "knowledge_base" / "sources.json"
+    if not registry.exists():
+        return {}
+    try:
+        entries = json.loads(registry.read_text(encoding='utf-8'))
+        rel = str(path.relative_to(ROOT)).replace('\\', '/')
+        return next((item for item in entries if item.get('file') in {path.name, rel}), {})
+    except (ValueError, OSError):
+        return {}
+
+
 def chunk_text(text, size=900, overlap=140):
     text = re.sub(r'\s+', ' ', text).strip()
     if not text:
@@ -40,6 +54,16 @@ def ingest_knowledge():
     for path in KNOWLEDGE.rglob('*'):
         if path.is_file() and path.suffix.lower() in {'.pdf', '.txt', '.md'}:
             text = read_document(path)
+            meta = document_metadata(path)
+            if meta:
+                text = (f"Source URL: {meta.get('url', meta.get('source_url', 'Not provided'))}\n"
+                        f"Authority: {meta.get('authority', 'Not specified')}\n"
+                        f"Title: {meta.get('title', path.name)}\n"
+                        f"Jurisdiction: {meta.get('jurisdiction', 'Not specified')}\n"
+                        f"Document date: {meta.get('document_date', 'Not specified')}\n"
+                        f"Effective date: {meta.get('effective_date', 'Not specified')}\n"
+                        f"Licence: {meta.get('licence', 'Not specified')}\n"
+                        f"Last verified: {meta.get('last_verified', 'Not specified')}\n\n{text}")
             for idx, chunk in enumerate(chunk_text(text)):
                 records.append((path.name, str(path.relative_to(ROOT)), chunk, idx, 'local-ingest'))
     replace_chunks(records)
@@ -88,4 +112,5 @@ def retrieve(query, limit=5):
     br, vr = ranks(b_scores), ranks(v_scores)
     blended = [br[i] + vr[i] for i in range(len(chunks))]
     order = sorted(range(len(chunks)), key=lambda i: blended[i], reverse=True)[:limit]
-    return [{"source": chunks[i]['source_name'], "path": chunks[i]['source_path'], "chunk_id": chunks[i]['id'], "text": docs[i], "score": round(float(blended[i]), 5)} for i in order]
+    selected = [i for i in order if b_scores[i] > 0 or float(v_scores[i]) > 0]
+    return [{"source": chunks[i]['source_name'], "path": chunks[i]['source_path'], "chunk_id": chunks[i]['id'], "text": docs[i], "score": round(float(blended[i]), 5)} for i in selected]
