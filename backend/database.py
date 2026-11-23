@@ -42,8 +42,26 @@ def init_db():
             chunk_index INTEGER NOT NULL,
             created_at TEXT NOT NULL
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS complaint_status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            complaint_id INTEGER NOT NULL REFERENCES complaints(id),
+            previous_status TEXT,
+            new_status TEXT NOT NULL,
+            remarks TEXT,
+            updated_by TEXT,
+            created_at TEXT NOT NULL
+        )""")
         cols = [r['name'] for r in c.execute('PRAGMA table_info(complaints)').fetchall()]
         if 'image_analysis' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN image_analysis TEXT')
+        # Existing records have no trustworthy earlier history. Preserve only their
+        # currently stored status and updated timestamp as the migration baseline.
+        c.execute("""INSERT INTO complaint_status_history
+            (complaint_id, previous_status, new_status, remarks, updated_by, created_at)
+            SELECT c.id, NULL, c.status, NULL, NULL, c.updated_at
+            FROM complaints c
+            WHERE NOT EXISTS (
+                SELECT 1 FROM complaint_status_history h WHERE h.complaint_id=c.id
+            )""")
         c.commit()
 
 
@@ -56,6 +74,9 @@ def create_complaint(data):
             (data['reference'], data['title'], data['description'], data['category'], data.get('priority','Medium'),
              data.get('latitude'), data.get('longitude'), data.get('address'), data.get('ward_name'), data.get('corporation'),
              data.get('location_source','manual'), data.get('image_path'), data.get('image_analysis'), now, now))
+        c.execute("""INSERT INTO complaint_status_history
+            (complaint_id, previous_status, new_status, remarks, updated_by, created_at)
+            VALUES (?, NULL, 'Submitted', NULL, ?, ?)""", (cur.lastrowid, 'Citizen', now))
         c.commit()
         return get_complaint_by_id(cur.lastrowid)
 
@@ -71,12 +92,33 @@ def list_complaints():
         return [dict(r) for r in c.execute("SELECT * FROM complaints ORDER BY created_at DESC").fetchall()]
 
 
-def update_status(cid, status):
+def update_status(cid, status, remarks=None, updated_by='Admin'):
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     with connect() as c:
-        cur = c.execute("UPDATE complaints SET status=?, updated_at=? WHERE id=?", (status, now, cid))
+        current = c.execute("SELECT status FROM complaints WHERE id=?", (cid,)).fetchone()
+        if not current:
+            return False
+        previous = current['status']
+        if previous != status:
+            c.execute("UPDATE complaints SET status=?, updated_at=? WHERE id=?", (status, now, cid))
+            c.execute("""INSERT INTO complaint_status_history
+                (complaint_id, previous_status, new_status, remarks, updated_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""", (cid, previous, status, remarks, updated_by, now))
+        elif remarks:
+            c.execute("UPDATE complaints SET updated_at=? WHERE id=?", (now, cid))
+            c.execute("""INSERT INTO complaint_status_history
+                (complaint_id, previous_status, new_status, remarks, updated_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""", (cid, previous, status, remarks, updated_by, now))
         c.commit()
-        return cur.rowcount > 0
+        return True
+
+
+def get_status_history(cid):
+    with connect() as c:
+        return [dict(row) for row in c.execute(
+            "SELECT * FROM complaint_status_history WHERE complaint_id=? ORDER BY created_at, id",
+            (cid,)
+        ).fetchall()]
 
 
 def replace_chunks(chunks):

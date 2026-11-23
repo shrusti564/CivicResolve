@@ -17,6 +17,10 @@ function escapeHtml(value) {
     }[c]));
 }
 
+function escapeAttribute(value) {
+    return escapeHtml(value).replace(/`/g, "&#96;");
+}
+
 async function api(url, options = {}) {
     const response = await fetch(API + url, options);
     const contentType = response.headers.get("content-type") || "";
@@ -145,11 +149,15 @@ function initCitizen() {
     $("complaintForm").addEventListener("submit", async e => {
         e.preventDefault();
 
+        const form = e.currentTarget instanceof HTMLFormElement
+            ? e.currentTarget
+            : $("complaintForm");
+        if (!form) return;
         const button = e.submitter;
         if (button) { button.disabled = true; button.textContent = "Submitting..."; }
 
         try {
-            const formData = new FormData(e.currentTarget);
+            const formData = new FormData(form);
 
             if (!formData.get("latitude") ||
                 !formData.get("longitude")) {
@@ -163,10 +171,11 @@ function initCitizen() {
             });
 
             $("submitMessage").className = "form-message success";
-            $("submitMessage").textContent =
-                `Complaint saved. Reference: ${result.reference}. This is a local academic prototype, not a government filing.`;
+            $("submitMessage").innerHTML = `Complaint saved. Reference: <strong>${escapeHtml(result.reference)}</strong>. <a href="/track?reference=${encodeURIComponent(result.reference)}">Track this complaint</a>. This is a local academic prototype, not a government filing.`;
 
-            e.currentTarget.reset();
+            if (form.isConnected && typeof form.reset === "function") {
+                form.reset();
+            }
 
             if (citizenMarker) {
                 citizenMap.removeLayer(citizenMarker);
@@ -276,6 +285,12 @@ function initAdmin() {
     });
 
     $("tableSearch")?.addEventListener("input", loadTable);
+    $("complaintRows")?.addEventListener("change", async e => {
+        const select = e.target.closest("select[data-complaint-id]");
+        if (!select) return;
+        const remarks = window.prompt("Add an action note for this status update (optional):") || "";
+        await updateComplaintStatus(select.dataset.complaintId, select.value, remarks);
+    });
 
     refreshDashboard();
     loadTable();
@@ -307,11 +322,7 @@ async function refreshDashboard() {
 
         const notice = $("demoNotice");
 
-        if (notice) {
-        notice.classList.remove("hidden");
-        notice.textContent =
-            "HISTORICAL ANALYTICS · Bengaluru complaints, 2019–2022. These are not live CivicResolve submissions.";
-        }
+        notice?.remove();
 
         drawChart(
             "categoryChart",
@@ -327,12 +338,13 @@ async function refreshDashboard() {
             result.statuses.map(x => x.complaints)
         );
 
-        drawChart(
-            "monthlyChart",
-            "line",
-            result.monthly.map(x => x.month),
-            result.monthly.map(x => x.complaints)
-        );
+        const yearly = new Map();
+        result.monthly.forEach(x => {
+            const year = String(x.month).slice(0, 4);
+            yearly.set(year, (yearly.get(year) || 0) + x.complaints);
+        });
+        const years = Array.from({ length: 8 }, (_, i) => String(2019 + i));
+        drawChart("monthlyChart", "line", years, years.map(year => yearly.get(year) || 0), "Complaints by year");
 
         await loadMapLayers();
 
@@ -341,13 +353,13 @@ async function refreshDashboard() {
             if ($(id)) $(id).textContent = "Unavailable";
         });
         const notice = $("demoNotice");
-        if (notice) { notice.classList.remove("hidden"); notice.textContent = `Historical dashboard unavailable: ${error.message}`; }
+        notice?.remove();
     }
 }
 
 // ---------------- CHARTS ----------------
 
-function drawChart(id, type, labels, values) {
+function drawChart(id, type, labels, values, seriesLabel = "Historical complaints") {
     const canvas = $(id);
 
     if (!canvas || !window.Chart) return;
@@ -359,7 +371,7 @@ function drawChart(id, type, labels, values) {
         data: {
             labels,
             datasets: [{
-                label: "Historical complaints",
+                label: seriesLabel,
                 data: values,
                 backgroundColor: type === "line"
                     ? "rgba(40,116,81,0.15)"
@@ -386,7 +398,7 @@ function drawChart(id, type, labels, values) {
                 }
             },
             scales: type === "doughnut" ? {} : {
-                x: { grid: { display: false } },
+                x: { grid: { display: false }, ...(id === "monthlyChart" ? { title: { display: true, text: "Year" } } : {}) },
                 y: { beginAtZero: true }
             }
         }
@@ -419,7 +431,7 @@ async function loadTable() {
                 <td>${new Date(x.created_at).toLocaleDateString()}</td>
                 <td><span class="status-chip">${escapeHtml(x.status)}</span></td>
                 <td>
-                    <select onchange="updateComplaintStatus(${Number(x.id)},this.value)">
+                    <select data-complaint-id="${Number(x.id)}">
                         ${["Submitted","Under Review","In Progress","Resolved","Rejected"].map(s =>
                             `<option value="${s}" ${x.status === s ? "selected" : ""}>${s}</option>`
                         ).join("")}
@@ -436,12 +448,12 @@ async function loadTable() {
     }
 }
 
-window.updateComplaintStatus = async (id, status) => {
+window.updateComplaintStatus = async (id, status, remarks = "") => {
     try {
         await api(`/api/complaints/${id}/status`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status })
+            body: JSON.stringify({ status, remarks })
         });
 
         await loadTable();
@@ -571,8 +583,10 @@ async function loadDatasets() {
 
     try {
         const data = await api("/api/datasets");
-        const files = data.files || [];
-        const sources = data.sources?.datasets || [];
+        const files = (data.files || []).filter(file => file.file !== ".gitkeep");
+        const sources = (data.sources?.datasets || []).filter(source =>
+            String(source.status || "").trim().toLowerCase() !== "failed"
+        );
 
         $("datasetList").innerHTML =
             files.map(file => `
@@ -604,4 +618,100 @@ async function loadDatasets() {
 document.addEventListener("DOMContentLoaded", () => {
     initCitizen();
     initAdmin();
+    initTracking();
 });
+
+const TRACK_STAGES = [
+    { status: "Submitted", title: "Complaint Submitted", detail: "Your complaint was registered in CivicResolve." },
+    { status: "Under Review", title: "Under Review", detail: "The complaint is being verified." },
+    { status: "Assigned to Department", title: "Assigned to Department", detail: "This stage will be shown when an assignment is recorded." },
+    { status: "In Progress", title: "Work in Progress", detail: "Work on the reported issue is in progress." },
+    { status: "Resolved", title: "Resolved", detail: "The complaint has been marked resolved." }
+];
+
+function initTracking() {
+    const form = $("trackingForm");
+    if (!form) return;
+    const reference = new URLSearchParams(location.search).get("reference");
+    if (reference) {
+        $("trackingReference").value = reference;
+        lookupTrackedComplaint(reference);
+    }
+    form.addEventListener("submit", async event => {
+        event.preventDefault();
+        await lookupTrackedComplaint($("trackingReference").value.trim());
+    });
+}
+
+async function lookupTrackedComplaint(reference) {
+    const message = $("trackingMessage");
+    const result = $("trackingResult");
+    const button = $("trackingButton");
+    if (!reference) {
+        message.className = "tracking-message error";
+        message.textContent = "Enter a complaint reference number to continue.";
+        result.classList.add("hidden");
+        return;
+    }
+    button.disabled = true;
+    button.textContent = "Looking up…";
+    message.className = "tracking-message";
+    message.textContent = "Searching for your complaint…";
+    result.classList.add("hidden");
+    try {
+        const complaint = await api(`/api/complaints/track/${encodeURIComponent(reference)}`);
+        renderTrackedComplaint(complaint);
+        message.textContent = "Complaint details loaded.";
+        result.classList.remove("hidden");
+    } catch (error) {
+        message.className = "tracking-message error";
+        message.textContent = error.message.includes("404") || error.message.toLowerCase().includes("no complaint")
+            ? "We couldn’t find a complaint with that reference. Check the number and try again."
+            : `Could not load tracking details: ${error.message}`;
+    } finally {
+        button.disabled = false;
+        button.innerHTML = 'Track complaint <span aria-hidden="true">→</span>';
+    }
+}
+
+function renderTrackedComplaint(c) {
+    const history = c.status_history || [];
+    const current = c.status;
+    const known = TRACK_STAGES.map(s => s.status);
+    let activeIndex = known.indexOf(current);
+    if (activeIndex < 0 && current === "Rejected") activeIndex = Math.max(0, known.indexOf(history.at(-1)?.previous_status));
+    const eventsFor = status => history.filter(event => event.new_status === status);
+    const location = [c.address, c.ward_name, c.corporation].filter(Boolean).join(" · ") || "Location not provided";
+    const latest = history.at(-1);
+    const progress = current === "Rejected" ? 0 : Math.max(0, activeIndex) / (TRACK_STAGES.length - 1) * 100;
+    const stages = TRACK_STAGES.map((stage, index) => {
+        const event = eventsFor(stage.status).at(-1);
+        const wasRecorded = Boolean(event);
+        const isCompleted = wasRecorded && (index < activeIndex || (index === activeIndex && current === "Resolved"));
+        const isCurrent = index === activeIndex && current !== "Resolved" && current !== "Rejected";
+        const state = isCompleted ? "completed" : isCurrent ? "current" : "pending";
+        const icon = isCompleted ? "✓" : isCurrent ? "●" : "○";
+        return `<li class="timeline-stage ${state}"><span class="timeline-icon" aria-label="${state}">${icon}</span><div class="timeline-copy"><div class="timeline-title">${escapeHtml(stage.title)}${isCurrent ? '<span class="stage-current-label">CURRENT</span>' : ""}</div><p>${escapeHtml(stage.detail)}</p>${event ? `<small>${formatDate(event.created_at)}${event.updated_by ? ` · ${escapeHtml(event.updated_by)}` : ""}</small>` : ""}${event?.remarks ? `<div class="timeline-note">${escapeHtml(event.remarks)}</div>` : ""}</div></li>`;
+    }).join("");
+    const statusLabel = current === "In Progress" ? "Work in Progress" : current;
+    const image = c.resolution_image_path || c.resolution_photo_path;
+    $("trackingResult").innerHTML = `
+      <section class="tracking-latest panel"><div><span class="step">LATEST UPDATE</span><h2>${escapeHtml(statusLabel)}</h2><p>${latest?.remarks ? escapeHtml(latest.remarks) : "No additional action note has been recorded."}</p>${latest ? `<small>Updated ${formatDate(latest.created_at)}${latest.updated_by ? ` · ${escapeHtml(latest.updated_by)}` : ""}</small>` : ""}</div><span class="status-chip">${escapeHtml(statusLabel)}</span></section>
+      <section class="panel tracking-details"><div class="panel-head"><div><span class="step">COMPLAINT DETAILS</span><h3>${escapeHtml(c.title)}</h3></div><span class="status-chip">${escapeHtml(statusLabel)}</span></div>
+        <p class="tracking-description">${escapeHtml(c.description)}</p><div class="tracking-facts">
+          ${trackingFact("Complaint ID", c.reference)}${trackingFact("Category", c.category)}${trackingFact("Location / Ward", location)}${trackingFact("Date submitted", formatDate(c.created_at))}${trackingFact("Last updated", formatDate(c.updated_at))}${trackingFact("Assigned department / officer", c.assigned_department || c.assigned_officer || "Not recorded")}
+        </div>
+      </section>
+      <section class="panel tracking-progress"><div class="panel-head"><div><span class="step">PROGRESS</span><h3>What happens next</h3><p>Stages appear as updates are recorded for this complaint.</p></div><strong class="progress-percent">${Math.round(progress)}%</strong></div><div class="progress-track" role="progressbar" aria-label="Complaint progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><span style="width:${progress}%"></span></div>${current === "Rejected" ? `<p class="tracking-rejected">This complaint was marked Rejected.${latest?.remarks ? ` ${escapeHtml(latest.remarks)}` : ""}</p>` : `<ol class="tracking-timeline">${stages}</ol>`}</section>
+      <section class="panel tracking-resolution"><span class="step">RESOLUTION EVIDENCE</span><h3>Department remarks and photos</h3>${latest?.remarks ? `<p>${escapeHtml(latest.remarks)}</p>` : `<p>No department remarks have been recorded.</p>`}${image ? `<img class="resolution-photo" src="${escapeAttribute(image)}" alt="Complaint resolution evidence">` : `<p class="muted">No resolution photo is available.</p>`}</section>`;
+}
+
+function trackingFact(label, value) {
+    return `<div class="tracking-fact"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "Not recorded")}</strong></div>`;
+}
+
+function formatDate(value) {
+    if (!value) return "Not recorded";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Not recorded" : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}

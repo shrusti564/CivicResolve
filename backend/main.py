@@ -7,7 +7,7 @@ from datetime import datetime
 from collections import Counter
 import uuid, shutil, os, calendar
 from dotenv import load_dotenv
-from .database import init_db, create_complaint, list_complaints, get_complaint_by_id, update_status
+from .database import init_db, create_complaint, list_complaints, get_complaint_by_id, update_status, get_status_history
 from .geo import lookup_ward
 from .analytics import (
     get_dashboard_kpis,
@@ -67,6 +67,9 @@ def home(): return (ROOT / 'frontend' / 'index.html').read_text(encoding='utf-8'
 @app.get('/admin', response_class=HTMLResponse)
 def admin(): return (ROOT / 'frontend' / 'admin.html').read_text(encoding='utf-8')
 
+@app.get('/track', response_class=HTMLResponse)
+def track_page(): return (ROOT / 'frontend' / 'track.html').read_text(encoding='utf-8')
+
 @app.get('/api/health')
 def health():
     return {"status":"ok", "app":"CivicResolve", "gemini_enabled":bool(os.getenv('GEMINI_API_KEY'))}
@@ -122,11 +125,26 @@ async def submit_complaint(title: str = Form(...), description: str = Form(...),
 @app.get('/api/complaints')
 def complaints(): return list_complaints()
 
-class StatusUpdate(BaseModel): status: str
+@app.get('/api/complaints/track/{reference}')
+def track_complaint(reference: str):
+    """Public exact-reference lookup for citizens tracking their complaint."""
+    from .database import connect
+    with connect() as conn:
+        row = conn.execute('SELECT * FROM complaints WHERE upper(reference)=upper(?)', (reference.strip(),)).fetchone()
+    if not row:
+        raise HTTPException(404, 'No complaint found with that reference number.')
+    item = dict(row)
+    item['status_history'] = get_status_history(item['id'])
+    return item
+
+class StatusUpdate(BaseModel):
+    status: str
+    remarks: str | None = None
 @app.patch('/api/complaints/{cid}/status')
 def change_status(cid:int, body:StatusUpdate):
     if body.status not in {'Submitted','Under Review','In Progress','Resolved','Rejected'}: raise HTTPException(400,'Invalid status')
-    if not update_status(cid, body.status): raise HTTPException(404,'Complaint not found')
+    if body.remarks and len(body.remarks) > 2000: raise HTTPException(400, 'Remarks must be 2000 characters or fewer')
+    if not update_status(cid, body.status, body.remarks): raise HTTPException(404,'Complaint not found')
     return get_complaint_by_id(cid)
 
 @app.get("/api/dashboard/historical")

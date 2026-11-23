@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Track Complaint | CivicResolve</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/"><span class="brand-mark">C</span><span>Civic<span class="brand-accent">Resolve</span><small>BENGALURU · CIVIC INTELLIGENCE</small></span></a>
+    <nav><a href="/">Citizen portal</a><a href="/track" class="active">Track complaint</a><a href="/admin">Admin dashboard</a></nav><span class="live-pill"><i></i> COMPLAINT TRACKING</span>
+  </header>
+  <main class="page-wrap tracking-wrap">
+    <section class="tracking-hero"><div class="eyebrow">CITIZEN SERVICES / TRACKING</div><h1>Follow your complaint<br><em>every step of the way.</em></h1><p>Enter the reference number you received after submitting your complaint.</p>
+      <form id="trackingForm" class="tracking-search"><label for="trackingReference">Complaint ID / Reference Number</label><div class="tracking-search-row"><input id="trackingReference" name="reference" required autocomplete="off" placeholder="e.g. CR-261123-A1B2C3"><button id="trackingButton" class="btn btn-primary" type="submit">Track complaint <span aria-hidden="true">→</span></button></div></form>
+    </section>
+    <div id="trackingMessage" class="tracking-message" role="status" aria-live="polite"></div>
+    <section id="trackingResult" class="tracking-result hidden" aria-label="Complaint tracking details"></section>
+    <footer><span>© 2026 CivicResolve · Academic prototype</span><span>Updates are based on information recorded in this system.</span></footer>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

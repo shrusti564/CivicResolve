@@ -18,6 +18,7 @@ Copy-Item .env.example .env
 
 Edit `.env` only if needed. `GEMINI_API_KEY` and `GEMINI_MODEL` are optional. Without a key, the assistant returns retrieved passages from the local knowledge index. Install datasets when desired:
 
+
 ```powershell
 python scripts/download_datasets.py
 ```
