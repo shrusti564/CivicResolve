@@ -2,9 +2,10 @@ from pathlib import Path
 import re
 import json
 from pypdf import PdfReader
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from .database import replace_chunks, get_chunks
+try:
+    from .database import replace_chunks, get_chunks
+except (ImportError, ValueError):
+    from database import replace_chunks, get_chunks
 
 ROOT = Path(__file__).resolve().parents[1]
 KNOWLEDGE = ROOT / "data" / "knowledge"
@@ -98,6 +99,8 @@ def retrieve(query, limit=5):
             score += idf * tf * (k1 + 1) / denom
         b_scores.append(score)
     try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
         vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1,2))
         matrix = vectorizer.fit_transform(docs + [query])
         v_scores = cosine_similarity(matrix[-1], matrix[:-1]).ravel()

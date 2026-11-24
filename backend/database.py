@@ -8,7 +8,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def connect():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -53,6 +53,47 @@ def init_db():
         )""")
         cols = [r['name'] for r in c.execute('PRAGMA table_info(complaints)').fetchall()]
         if 'image_analysis' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN image_analysis TEXT')
+        if 'group_id' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN group_id INTEGER REFERENCES complaint_groups(id)')
+
+        c.execute("""CREATE TABLE IF NOT EXISTS complaint_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            category TEXT NOT NULL,
+            ward_name TEXT,
+            corporation TEXT,
+            address TEXT,
+            latitude REAL,
+            longitude REAL,
+            status TEXT DEFAULT 'Submitted',
+            priority TEXT DEFAULT 'Medium',
+            assigned_department TEXT,
+            assigned_officer TEXT,
+            complaints_count INTEGER DEFAULT 1,
+            first_reported_at TEXT NOT NULL,
+            last_reported_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS citizen_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            complaint_id INTEGER NOT NULL REFERENCES complaints(id),
+            complaint_reference TEXT NOT NULL,
+            group_id INTEGER REFERENCES complaint_groups(id),
+            group_reference TEXT,
+            notification_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            status TEXT DEFAULT 'Delivered',
+            sent_at TEXT NOT NULL
+        )""")
+
+        c.execute("CREATE INDEX IF NOT EXISTS idx_complaints_group_id ON complaints(group_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_complaint_groups_reference ON complaint_groups(reference)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_notifications_complaint ON citizen_notifications(complaint_id)")
+
         # Existing records have no trustworthy earlier history. Preserve only their
         # currently stored status and updated timestamp as the migration baseline.
         c.execute("""INSERT INTO complaint_status_history
@@ -69,11 +110,11 @@ def create_complaint(data):
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     with connect() as c:
         cur = c.execute("""INSERT INTO complaints
-            (reference,title,description,category,priority,status,latitude,longitude,address,ward_name,corporation,location_source,image_path,image_analysis,created_at,updated_at)
-            VALUES (?,?,?,?,?,'Submitted',?,?,?,?,?,?,?,?,?,?)""",
+            (reference,title,description,category,priority,status,latitude,longitude,address,ward_name,corporation,location_source,image_path,image_analysis,created_at,updated_at,group_id)
+            VALUES (?,?,?,?,?,'Submitted',?,?,?,?,?,?,?,?,?,?,?)""",
             (data['reference'], data['title'], data['description'], data['category'], data.get('priority','Medium'),
              data.get('latitude'), data.get('longitude'), data.get('address'), data.get('ward_name'), data.get('corporation'),
-             data.get('location_source','manual'), data.get('image_path'), data.get('image_analysis'), now, now))
+             data.get('location_source','manual'), data.get('image_path'), data.get('image_analysis'), now, now, data.get('group_id')))
         c.execute("""INSERT INTO complaint_status_history
             (complaint_id, previous_status, new_status, remarks, updated_by, created_at)
             VALUES (?, NULL, 'Submitted', NULL, ?, ?)""", (cur.lastrowid, 'Citizen', now))
@@ -119,6 +160,195 @@ def get_status_history(cid):
             "SELECT * FROM complaint_status_history WHERE complaint_id=? ORDER BY created_at, id",
             (cid,)
         ).fetchall()]
+
+
+def create_complaint_group(data):
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    with connect() as c:
+        cur = c.execute("""INSERT INTO complaint_groups
+            (reference, title, summary, category, ward_name, corporation, address, latitude, longitude, status, priority, assigned_department, assigned_officer, complaints_count, first_reported_at, last_reported_at, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                data['reference'],
+                data['title'],
+                data['summary'],
+                data['category'],
+                data.get('ward_name'),
+                data.get('corporation'),
+                data.get('address'),
+                data.get('latitude'),
+                data.get('longitude'),
+                data.get('status', 'Submitted'),
+                data.get('priority', 'Medium'),
+                data.get('assigned_department'),
+                data.get('assigned_officer'),
+                data.get('complaints_count', 1),
+                data.get('first_reported_at', now),
+                data.get('last_reported_at', now),
+                now,
+                now
+            )
+        )
+        c.commit()
+        return get_complaint_group(cur.lastrowid)
+
+
+def get_complaint_group(gid):
+    with connect() as c:
+        row = c.execute("SELECT * FROM complaint_groups WHERE id=?", (gid,)).fetchone()
+        if not row:
+            return None
+        group = dict(row)
+        complaints = [dict(r) for r in c.execute("SELECT * FROM complaints WHERE group_id=? ORDER BY created_at ASC", (gid,)).fetchall()]
+        group['complaints'] = complaints
+        group['complaints_count'] = len(complaints) if complaints else group['complaints_count']
+        group['linked_complaint_ids'] = [r['id'] for r in complaints]
+        group['linked_references'] = [r['reference'] for r in complaints]
+        return group
+
+
+def get_complaint_group_by_reference(ref):
+    with connect() as c:
+        row = c.execute("SELECT id FROM complaint_groups WHERE upper(reference)=upper(?)", (ref.strip(),)).fetchone()
+        if not row:
+            return None
+        return get_complaint_group(row['id'])
+
+
+def list_complaint_groups(status=None, category=None, search=None):
+    with connect() as c:
+        query = "SELECT * FROM complaint_groups WHERE 1=1"
+        params = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+        if search:
+            query += " AND (title LIKE ? OR summary LIKE ? OR ward_name LIKE ? OR address LIKE ? OR reference LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s, s, s])
+        query += " ORDER BY last_reported_at DESC, id DESC"
+        rows = [dict(r) for r in c.execute(query, params).fetchall()]
+
+        for r in rows:
+            linked = c.execute("SELECT id, reference, title, created_at, status, latitude, longitude, address, ward_name, image_path, priority FROM complaints WHERE group_id=? ORDER BY created_at ASC", (r['id'],)).fetchall()
+            r['complaints_count'] = len(linked)
+            r['linked_references'] = [x['reference'] for x in linked]
+            r['linked_complaint_ids'] = [x['id'] for x in linked]
+        return rows
+
+
+def get_complaints_by_group_id(gid):
+    with connect() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM complaints WHERE group_id=? ORDER BY created_at ASC", (gid,)).fetchall()]
+
+
+def link_complaint_to_group(cid, gid):
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    with connect() as c:
+        comp = c.execute("SELECT created_at, latitude, longitude, ward_name, address FROM complaints WHERE id=?", (cid,)).fetchone()
+        if not comp:
+            return False
+        c.execute("UPDATE complaints SET group_id=?, updated_at=? WHERE id=?", (gid, now, cid))
+
+        stats = c.execute("SELECT COUNT(*) as cnt, MIN(created_at) as min_date, MAX(created_at) as max_date FROM complaints WHERE group_id=?", (gid,)).fetchone()
+        grp = c.execute("SELECT latitude, longitude, ward_name, address FROM complaint_groups WHERE id=?", (gid,)).fetchone()
+
+        new_lat = grp['latitude'] if grp['latitude'] is not None else comp['latitude']
+        new_lon = grp['longitude'] if grp['longitude'] is not None else comp['longitude']
+        new_ward = grp['ward_name'] or comp['ward_name']
+        new_addr = grp['address'] or comp['address']
+
+        c.execute("""UPDATE complaint_groups 
+            SET complaints_count=?, first_reported_at=?, last_reported_at=?, latitude=?, longitude=?, ward_name=?, address=?, updated_at=?
+            WHERE id=?""",
+            (stats['cnt'], stats['min_date'], stats['max_date'], new_lat, new_lon, new_ward, new_addr, now, gid))
+        c.commit()
+        return True
+
+
+def update_group_status(gid, status, remarks=None, updated_by='Admin', assigned_department=None, assigned_officer=None):
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    with connect() as c:
+        grp = c.execute("SELECT * FROM complaint_groups WHERE id=?", (gid,)).fetchone()
+        if not grp:
+            return None
+        grp = dict(grp)
+        previous_status = grp['status']
+
+        update_fields = ["status=?", "updated_at=?"]
+        params = [status, now]
+
+        if assigned_department is not None:
+            update_fields.append("assigned_department=?")
+            params.append(assigned_department)
+        if assigned_officer is not None:
+            update_fields.append("assigned_officer=?")
+            params.append(assigned_officer)
+
+        params.append(gid)
+        c.execute(f"UPDATE complaint_groups SET {', '.join(update_fields)} WHERE id=?", params)
+
+        linked = [dict(r) for r in c.execute("SELECT * FROM complaints WHERE group_id=?", (gid,)).fetchall()]
+
+        for comp in linked:
+            comp_id = comp['id']
+            c.execute("UPDATE complaints SET status=?, updated_at=? WHERE id=?", (status, now, comp_id))
+            c.execute("""INSERT INTO complaint_status_history
+                (complaint_id, previous_status, new_status, remarks, updated_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (comp_id, comp['status'], status, remarks or f"Synchronized from consolidated issue {grp['reference']}", updated_by, now)
+            )
+
+            if status == 'Resolved':
+                notif_type = 'issue_resolved'
+                notif_title = f"Resolved: {grp['title']}"
+                notif_msg = f"Your complaint ({comp['reference']}) regarding '{grp['title']}' has been resolved. {remarks or 'Resolution completed by civic department.'}"
+            else:
+                notif_type = 'status_updated'
+                notif_title = f"Issue Updated: {status}"
+                notif_msg = f"Your complaint ({comp['reference']}) part of consolidated issue '{grp['title']}' was updated to '{status}'. {remarks or ''}".strip()
+
+            c.execute("""INSERT INTO citizen_notifications
+                (complaint_id, complaint_reference, group_id, group_reference, notification_type, title, message, status, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'Delivered', ?)""",
+                (comp_id, comp['reference'], gid, grp['reference'], notif_type, notif_title, notif_msg, now)
+            )
+
+        c.commit()
+        return get_complaint_group(gid)
+
+
+def update_group_info(gid, title=None, summary=None, priority=None):
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    with connect() as c:
+        fields = ["updated_at=?"]
+        params = [now]
+        if title:
+            fields.append("title=?")
+            params.append(title)
+        if summary:
+            fields.append("summary=?")
+            params.append(summary)
+        if priority:
+            fields.append("priority=?")
+            params.append(priority)
+        params.append(gid)
+        c.execute(f"UPDATE complaint_groups SET {', '.join(fields)} WHERE id=?", params)
+        c.commit()
+        return get_complaint_group(gid)
+
+
+def get_notifications_for_complaint(cid):
+    with connect() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM citizen_notifications WHERE complaint_id=? ORDER BY sent_at DESC, id DESC", (cid,)).fetchall()]
+
+
+def get_notifications_for_group(gid):
+    with connect() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM citizen_notifications WHERE group_id=? ORDER BY sent_at DESC, id DESC", (gid,)).fetchall()]
 
 
 def replace_chunks(chunks):

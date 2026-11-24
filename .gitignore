@@ -7,3 +7,17 @@ data/raw/*
 !data/raw/.gitkeep
 uploads/*
 !uploads/.gitkeep
+
+# Python virtual environments
+venv/
+.venv/
+.venv-1/
+backend/venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Node dependencies
+node_modules/
+.next/

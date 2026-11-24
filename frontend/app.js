@@ -171,7 +171,10 @@ function initCitizen() {
             });
 
             $("submitMessage").className = "form-message success";
-            $("submitMessage").innerHTML = `Complaint saved. Reference: <strong>${escapeHtml(result.reference)}</strong>. <a href="/track?reference=${encodeURIComponent(result.reference)}">Track this complaint</a>. This is a local academic prototype, not a government filing.`;
+            const dupBanner = result.is_duplicate
+                ? `<div class="duplicate-alert-banner"><strong>👥 Community Alert:</strong> <strong>${result.complaints_count} citizens</strong> have reported this same issue in your area. Your report is linked to consolidated issue <strong>${escapeHtml(result.group_reference || "")}</strong>.</div>`
+                : `<div class="duplicate-alert-banner">Issue registered. Associated with consolidated issue <strong>${escapeHtml(result.group_reference || "")}</strong>.</div>`;
+            $("submitMessage").innerHTML = `Complaint saved. Reference: <strong>${escapeHtml(result.reference)}</strong>. <a href="/track?reference=${encodeURIComponent(result.reference)}">Track this complaint</a>.<br>${dupBanner}`;
 
             if (form.isConnected && typeof form.reset === "function") {
                 form.reset();
@@ -263,7 +266,11 @@ function initAdmin() {
 
     initAdminMap();
 
-    $("refreshBtn")?.addEventListener("click", refreshDashboard);
+    $("refreshBtn")?.addEventListener("click", () => {
+        refreshDashboard();
+        loadConsolidatedGroups();
+        loadTable();
+    });
 
     $("ingestBtn")?.addEventListener("click", async () => {
         const button = $("ingestBtn");
@@ -292,68 +299,168 @@ function initAdmin() {
         await updateComplaintStatus(select.dataset.complaintId, select.value, remarks);
     });
 
+    // Consolidated Issues event handlers
+    $("groupSearch")?.addEventListener("input", filterAndRenderConsolidated);
+    $("groupCategoryFilter")?.addEventListener("change", filterAndRenderConsolidated);
+    $("groupStatusFilter")?.addEventListener("change", filterAndRenderConsolidated);
+
+    $("viewCardsBtn")?.addEventListener("click", () => {
+        $("viewCardsBtn").classList.add("active");
+        $("viewTableBtn").classList.remove("active");
+        $("consolidatedCards").classList.remove("hidden");
+        $("consolidatedTableView").classList.add("hidden");
+    });
+
+    $("viewTableBtn")?.addEventListener("click", () => {
+        $("viewTableBtn").classList.add("active");
+        $("viewCardsBtn").classList.remove("active");
+        $("consolidatedCards").classList.add("hidden");
+        $("consolidatedTableView").classList.remove("hidden");
+    });
+
+    $("reclusterBtn")?.addEventListener("click", async () => {
+        const btn = $("reclusterBtn");
+        btn.disabled = true;
+        btn.textContent = "Clustering…";
+        try {
+            await api("/api/groups/recluster", { method: "POST" });
+            await loadConsolidatedGroups();
+            await loadTable();
+        } catch (e) {
+            alert("Re-clustering error: " + e.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "↺ Re-cluster";
+        }
+    });
+
+    $("modalCloseBtn")?.addEventListener("click", closeGroupModal);
+    $("groupModal")?.addEventListener("click", e => {
+        if (e.target.id === "groupModal") closeGroupModal();
+    });
+
+    $("groupStatusForm")?.addEventListener("submit", async e => {
+        e.preventDefault();
+        const gid = $("modalGroupId").value;
+        const status = $("modalStatusSelect").value;
+        const assigned_department = $("modalDepartmentInput").value.trim() || null;
+        const assigned_officer = $("modalOfficerInput").value.trim() || null;
+        const remarks = $("modalRemarksInput").value.trim() || null;
+        const statusMsg = $("groupActionStatus");
+        const saveBtn = $("saveGroupStatusBtn");
+
+        saveBtn.disabled = true;
+        saveBtn.textContent = "Updating & Notifying…";
+        statusMsg.className = "form-action-msg";
+        statusMsg.textContent = "";
+
+        try {
+            const updated = await api(`/api/groups/${gid}/status`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status, remarks, assigned_department, assigned_officer })
+            });
+            statusMsg.className = "form-action-msg success";
+            statusMsg.textContent = `✓ Status updated to ${status}. ${updated.complaints_count} citizens notified!`;
+            await openGroupDetails(gid);
+            await loadConsolidatedGroups();
+            await loadTable();
+        } catch (err) {
+            statusMsg.className = "form-action-msg error";
+            statusMsg.textContent = `Error: ${err.message}`;
+        } finally {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = "Update Status & Notify Citizens <span>→</span>";
+        }
+    });
+
     refreshDashboard();
+    loadConsolidatedGroups();
     loadTable();
     loadDatasets();
 }
 
 async function refreshDashboard() {
+    let result = null;
     try {
-        const result = await api("/api/dashboard/historical");
-        const k = result.kpis;
+        result = await api("/api/dashboard/historical");
+    } catch (err) {
+        console.warn("Historical analytics unavailable, trying live complaints dashboard:", err);
+        try {
+            result = await api("/api/dashboard");
+        } catch (err2) {
+            console.error("Dashboard analytics error:", err2);
+        }
+    }
 
-        $("kpiTotal").textContent =
-            k.total_complaints.toLocaleString("en-IN");
-
-        $("kpiOpen").textContent =
-            k.open_complaints.toLocaleString("en-IN");
-
-        $("kpiResolved").textContent =
-            k.resolved_complaints.toLocaleString("en-IN");
-
-        $("kpiRate").textContent =
-            k.resolution_rate_percent + "%";
-
-        $("kpiMonth").textContent =
-            "2019–2022";
-
-        $("kpiGeo").textContent =
-            k.records_with_gps.toLocaleString("en-IN");
-
-        const notice = $("demoNotice");
-
-        notice?.remove();
-
-        drawChart(
-            "categoryChart",
-            "bar",
-            result.categories.slice(0, 10).map(x => x.category),
-            result.categories.slice(0, 10).map(x => x.complaints)
-        );
-
-        drawChart(
-            "statusChart",
-            "doughnut",
-            result.statuses.map(x => x.status),
-            result.statuses.map(x => x.complaints)
-        );
-
-        const yearly = new Map();
-        result.monthly.forEach(x => {
-            const year = String(x.month).slice(0, 4);
-            yearly.set(year, (yearly.get(year) || 0) + x.complaints);
-        });
-        const years = Array.from({ length: 8 }, (_, i) => String(2019 + i));
-        drawChart("monthlyChart", "line", years, years.map(year => yearly.get(year) || 0), "Complaints by year");
-
-        await loadMapLayers();
-
-    } catch (error) {
+    if (!result || !result.kpis) {
         ["kpiTotal", "kpiOpen", "kpiResolved", "kpiRate", "kpiMonth", "kpiGeo"].forEach(id => {
             if ($(id)) $(id).textContent = "Unavailable";
         });
         const notice = $("demoNotice");
         notice?.remove();
+        return;
+    }
+
+    const k = result.kpis;
+    if ($("kpiTotal")) $("kpiTotal").textContent = (k.total_complaints ?? 0).toLocaleString("en-IN");
+    if ($("kpiOpen")) $("kpiOpen").textContent = (k.open_complaints ?? 0).toLocaleString("en-IN");
+    if ($("kpiResolved")) $("kpiResolved").textContent = (k.resolved_complaints ?? 0).toLocaleString("en-IN");
+    if ($("kpiRate")) $("kpiRate").textContent = (k.resolution_rate_percent ?? 0) + "%";
+    if ($("kpiMonth")) $("kpiMonth").textContent = result.data_type === "historical" ? "2019–2022" : "Live data";
+    if ($("kpiGeo")) $("kpiGeo").textContent = (k.records_with_gps ?? 0).toLocaleString("en-IN");
+
+    const notice = $("demoNotice");
+    if (result.demo_notice) {
+        notice?.classList.remove("hidden");
+    } else {
+        notice?.remove();
+    }
+
+    // Safely render category chart
+    const categories = result.categories || [];
+    drawChart(
+        "categoryChart",
+        "bar",
+        categories.slice(0, 10).map(x => x.category),
+        categories.slice(0, 10).map(x => x.complaints),
+        result.data_type === "historical" ? "Historical complaints" : "Live complaints"
+    );
+
+    // Safely render status chart
+    const statuses = result.statuses || [];
+    drawChart(
+        "statusChart",
+        "doughnut",
+        statuses.map(x => x.status),
+        statuses.map(x => x.complaints),
+        "Status Distribution"
+    );
+
+    // Safely render monthly / trend chart
+    const monthly = result.monthly || [];
+    const yearly = new Map();
+    monthly.forEach(x => {
+        const year = String(x.month || "").slice(0, 4);
+        if (year) yearly.set(year, (yearly.get(year) || 0) + (x.complaints || 0));
+    });
+
+    let years = Array.from(yearly.keys()).sort();
+    if (!years.length) {
+        years = Array.from({ length: 8 }, (_, i) => String(2019 + i));
+    }
+    drawChart(
+        "monthlyChart",
+        "line",
+        years,
+        years.map(year => yearly.get(year) || 0),
+        result.data_type === "historical" ? "Complaints by year" : "Complaints trend"
+    );
+
+    try {
+        await loadMapLayers();
+    } catch (e) {
+        console.warn("Map layers error:", e);
     }
 }
 
@@ -427,6 +534,9 @@ async function loadTable() {
                 <td><strong>${escapeHtml(x.reference)}</strong></td>
                 <td>${escapeHtml(x.title)}</td>
                 <td>${escapeHtml(x.category)}</td>
+                <td>
+                    ${x.group_id ? `<button class="manage-link-btn" onclick="openGroupDetails(${Number(x.group_id)})" type="button" title="View consolidated issue">GRP-${Number(x.group_id)} ↗</button>` : `<span class="muted">—</span>`}
+                </td>
                 <td>${escapeHtml(x.ward_name || x.address || "Not provided")}</td>
                 <td>${new Date(x.created_at).toLocaleDateString()}</td>
                 <td><span class="status-chip">${escapeHtml(x.status)}</span></td>
@@ -439,12 +549,12 @@ async function loadTable() {
                 </td>
             </tr>
         `).join("") || `
-            <tr><td colspan="7" class="empty-state">No matching complaints.</td></tr>
+            <tr><td colspan="8" class="empty-state">No matching complaints.</td></tr>
         `;
 
     } catch (error) {
         $("complaintRows").innerHTML =
-            `<tr><td colspan="7">Could not load live complaints: ${escapeHtml(error.message)}</td></tr>`;
+            `<tr><td colspan="8">Could not load live complaints: ${escapeHtml(error.message)}</td></tr>`;
     }
 }
 
@@ -695,7 +805,49 @@ function renderTrackedComplaint(c) {
     }).join("");
     const statusLabel = current === "In Progress" ? "Work in Progress" : current;
     const image = c.resolution_image_path || c.resolution_photo_path;
+
+    const groupSection = c.group ? `
+      <section class="panel group-consolidation-badge">
+        <div class="group-badge-head">
+          <span class="badge-tag">CONSOLIDATED CIVIC ISSUE</span>
+          <span class="citizen-count-chip">👥 ${c.group.complaints_count} citizens reported this</span>
+        </div>
+        <h4>${escapeHtml(c.group.title)}</h4>
+        <p>${escapeHtml(c.group.summary)}</p>
+        <div class="group-meta-row">
+          <span>Consolidated Issue ID: <strong>${escapeHtml(c.group.reference)}</strong></span>
+          <span>First reported: <strong>${formatDate(c.group.first_reported_at)}</strong></span>
+          <span>Latest report: <strong>${formatDate(c.group.last_reported_at)}</strong></span>
+          <span>Group status: <strong>${escapeHtml(c.group.status)}</strong></span>
+        </div>
+      </section>
+    ` : "";
+
+    const notifsSection = (c.notifications && c.notifications.length) ? `
+      <section class="panel tracking-notifications">
+        <div class="panel-head">
+          <div>
+            <span class="step">NOTIFICATIONS</span>
+            <h3>Citizen Resolution Updates</h3>
+          </div>
+        </div>
+        <div class="notifications-history-list">
+          ${c.notifications.map(n => `
+            <div class="notification-item ${escapeHtml(n.notification_type)}">
+              <span class="notif-badge">${n.notification_type === 'issue_resolved' ? '✓ RESOLVED' : 'ℹ UPDATE'}</span>
+              <div>
+                <strong>${escapeHtml(n.title)}</strong>
+                <p>${escapeHtml(n.message)}</p>
+                <small>${formatDate(n.sent_at)} · Delivered to citizen</small>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </section>
+    ` : "";
+
     $("trackingResult").innerHTML = `
+      ${groupSection}
       <section class="tracking-latest panel"><div><span class="step">LATEST UPDATE</span><h2>${escapeHtml(statusLabel)}</h2><p>${latest?.remarks ? escapeHtml(latest.remarks) : "No additional action note has been recorded."}</p>${latest ? `<small>Updated ${formatDate(latest.created_at)}${latest.updated_by ? ` · ${escapeHtml(latest.updated_by)}` : ""}</small>` : ""}</div><span class="status-chip">${escapeHtml(statusLabel)}</span></section>
       <section class="panel tracking-details"><div class="panel-head"><div><span class="step">COMPLAINT DETAILS</span><h3>${escapeHtml(c.title)}</h3></div><span class="status-chip">${escapeHtml(statusLabel)}</span></div>
         <p class="tracking-description">${escapeHtml(c.description)}</p><div class="tracking-facts">
@@ -703,7 +855,8 @@ function renderTrackedComplaint(c) {
         </div>
       </section>
       <section class="panel tracking-progress"><div class="panel-head"><div><span class="step">PROGRESS</span><h3>What happens next</h3><p>Stages appear as updates are recorded for this complaint.</p></div><strong class="progress-percent">${Math.round(progress)}%</strong></div><div class="progress-track" role="progressbar" aria-label="Complaint progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><span style="width:${progress}%"></span></div>${current === "Rejected" ? `<p class="tracking-rejected">This complaint was marked Rejected.${latest?.remarks ? ` ${escapeHtml(latest.remarks)}` : ""}</p>` : `<ol class="tracking-timeline">${stages}</ol>`}</section>
-      <section class="panel tracking-resolution"><span class="step">RESOLUTION EVIDENCE</span><h3>Department remarks and photos</h3>${latest?.remarks ? `<p>${escapeHtml(latest.remarks)}</p>` : `<p>No department remarks have been recorded.</p>`}${image ? `<img class="resolution-photo" src="${escapeAttribute(image)}" alt="Complaint resolution evidence">` : `<p class="muted">No resolution photo is available.</p>`}</section>`;
+      <section class="panel tracking-resolution"><span class="step">RESOLUTION EVIDENCE</span><h3>Department remarks and photos</h3>${latest?.remarks ? `<p>${escapeHtml(latest.remarks)}</p>` : `<p>No department remarks have been recorded.</p>`}${image ? `<img class="resolution-photo" src="${escapeAttribute(image)}" alt="Complaint resolution evidence">` : `<p class="muted">No resolution photo is available.</p>`}</section>
+      ${notifsSection}`;
 }
 
 function trackingFact(label, value) {
@@ -715,3 +868,335 @@ function formatDate(value) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "Not recorded" : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
+
+
+// ---------------- CONSOLIDATED ISSUES (GROUPING & CLUSTERING) ----------------
+
+let cachedGroups = [];
+let modalGroupMap = null;
+let modalMarkers = [];
+
+async function loadConsolidatedGroups() {
+    try {
+        const res = await api("/api/groups");
+        cachedGroups = res.groups || [];
+
+        // Update KPI card
+        if ($("kpiGroups")) {
+            $("kpiGroups").textContent = (res.total_groups || 0).toLocaleString("en-IN");
+        }
+        if ($("kpiGroupsSub")) {
+            $("kpiGroupsSub").textContent = `${res.total_citizens || 0} citizens in ${res.multi_report_groups || 0} clusters`;
+        }
+        if ($("clusterSummaryPill")) {
+            $("clusterSummaryPill").textContent = `${res.total_groups || 0} Consolidated Issues · ${res.total_citizens || 0} Citizens Reporting · ${res.multi_report_groups || 0} Multi-Report Clusters`;
+        }
+
+        filterAndRenderConsolidated();
+    } catch (e) {
+        if ($("consolidatedCards")) {
+            $("consolidatedCards").innerHTML = `<div class="empty-state">Could not load consolidated issues: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+}
+
+function filterAndRenderConsolidated() {
+    const search = ($("groupSearch")?.value || "").toLowerCase().trim();
+    const cat = $("groupCategoryFilter")?.value || "";
+    const stat = $("groupStatusFilter")?.value || "";
+
+    const filtered = cachedGroups.filter(g => {
+        if (cat && g.category !== cat) return false;
+        if (stat && g.status !== stat) return false;
+        if (search) {
+            const haystack = [g.reference, g.title, g.summary, g.category, g.ward_name, g.address].join(" ").toLowerCase();
+            if (!haystack.includes(search)) return false;
+        }
+        return true;
+    });
+
+    renderConsolidatedCards(filtered);
+    renderConsolidatedTable(filtered);
+}
+
+function renderConsolidatedCards(groups) {
+    const container = $("consolidatedCards");
+    if (!container) return;
+
+    if (!groups.length) {
+        container.innerHTML = `<div class="empty-state">No matching consolidated issues found.</div>`;
+        return;
+    }
+
+    container.innerHTML = groups.map(g => {
+        const citizenCount = g.complaints_count || 1;
+        const isMulti = citizenCount > 1;
+        const dupBadge = isMulti
+            ? `<span class="duplicate-pill high-impact">👥 ${citizenCount} citizens reported</span>`
+            : `<span class="duplicate-pill">👤 1 citizen reported</span>`;
+        const locationText = [g.ward_name, g.address].filter(Boolean).join(" · ") || "Location not provided";
+
+        return `
+            <article class="consolidated-card" onclick="openGroupDetails(${Number(g.id)})">
+                <div>
+                    <div class="card-top-meta">
+                        <span class="card-group-ref">${escapeHtml(g.reference)}</span>
+                        ${dupBadge}
+                    </div>
+                    <h4>${escapeHtml(g.title)}</h4>
+                    <p class="card-summary">${escapeHtml(g.summary)}</p>
+                    <div class="card-details-grid">
+                        <div class="card-detail-item">
+                            <span>CATEGORY</span>
+                            <strong>${escapeHtml(g.category)}</strong>
+                        </div>
+                        <div class="card-detail-item">
+                            <span>LOCATION / WARD</span>
+                            <strong>${escapeHtml(locationText)}</strong>
+                        </div>
+                        <div class="card-detail-item">
+                            <span>FIRST REPORTED</span>
+                            <strong>${formatDateShort(g.first_reported_at)}</strong>
+                        </div>
+                        <div class="card-detail-item">
+                            <span>LAST REPORTED</span>
+                            <strong>${formatDateShort(g.last_reported_at)}</strong>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer-row">
+                    <span class="status-chip">${escapeHtml(g.status)}</span>
+                    <button class="manage-link-btn" type="button">Manage issue →</button>
+                </div>
+            </article>
+        `;
+    }).join("");
+}
+
+function renderConsolidatedTable(groups) {
+    const tbody = $("consolidatedTableRows");
+    if (!tbody) return;
+
+    if (!groups.length) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No matching consolidated issues.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = groups.map(g => {
+        const citizenCount = g.complaints_count || 1;
+        const dupBadge = citizenCount > 1
+            ? `<span class="duplicate-pill high-impact">👥 ${citizenCount} reports</span>`
+            : `<span class="duplicate-pill">👤 1 report</span>`;
+        const locationText = [g.ward_name, g.address].filter(Boolean).join(" · ") || "Not provided";
+
+        return `
+            <tr>
+                <td><strong>${escapeHtml(g.reference)}</strong></td>
+                <td>
+                    <div class="table-issue-title">${escapeHtml(g.title)}</div>
+                    <div class="table-issue-summary">${escapeHtml(g.summary)}</div>
+                </td>
+                <td>${escapeHtml(g.category)}</td>
+                <td>${escapeHtml(locationText)}</td>
+                <td>${dupBadge}</td>
+                <td>
+                    <small>1st: ${formatDateShort(g.first_reported_at)}</small><br>
+                    <small>Latest: ${formatDateShort(g.last_reported_at)}</small>
+                </td>
+                <td><span class="status-chip">${escapeHtml(g.status)}</span></td>
+                <td>
+                    <button class="manage-link-btn" onclick="openGroupDetails(${Number(g.id)})" type="button">View Details ↗</button>
+                </td>
+            </tr>
+        `;
+    }).join("");
+}
+
+function formatDateShort(val) {
+    if (!val) return "—";
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+window.openGroupDetails = async function(gid) {
+    const modal = $("groupModal");
+    if (!modal) return;
+    modal.style.display = "flex";
+    modal.classList.remove("hidden");
+    $("groupActionStatus").textContent = "";
+
+    try {
+        const group = await api(`/api/groups/${gid}`);
+        $("modalGroupId").value = group.id;
+        $("modalGroupRef").textContent = group.reference;
+        $("modalGroupCategory").textContent = group.category;
+        $("modalGroupStatus").textContent = group.status;
+        $("modalGroupStatus").className = `status-chip`;
+        $("modalGroupTitle").textContent = group.title;
+        $("modalCitizenCount").textContent = group.complaints_count || (group.complaints || []).length;
+        $("modalGroupLocation").textContent = [group.ward_name, group.address, group.corporation].filter(Boolean).join(" · ") || "Bengaluru";
+        $("modalFirstReported").textContent = formatDate(group.first_reported_at);
+        $("modalLastReported").textContent = formatDate(group.last_reported_at);
+        $("modalAssigned").textContent = [group.assigned_department, group.assigned_officer].filter(Boolean).join(" / ") || "Unassigned";
+        $("modalGroupSummary").textContent = group.summary;
+
+        // Form values
+        $("modalStatusSelect").value = group.status;
+        $("modalDepartmentInput").value = group.assigned_department || "";
+        $("modalOfficerInput").value = group.assigned_officer || "";
+        $("modalRemarksInput").value = "";
+
+        // Linked count
+        $("modalLinkedCount").textContent = (group.complaints || []).length;
+
+        // Render Complaints List
+        const list = $("modalComplaintsList");
+        if (!group.complaints || group.complaints.length === 0) {
+            list.innerHTML = `<div class="empty-state">No individual complaints linked yet.</div>`;
+        } else {
+            list.innerHTML = group.complaints.map(c => `
+                <div class="linked-complaint-item">
+                    <div class="linked-comp-head">
+                        <span class="linked-ref">${escapeHtml(c.reference)}</span>
+                        <span class="status-chip">${escapeHtml(c.status)}</span>
+                    </div>
+                    <h5 class="linked-comp-title">${escapeHtml(c.title)}</h5>
+                    <p class="linked-comp-desc">${escapeHtml(c.description)}</p>
+                    <div class="linked-comp-meta">
+                        <span>📅 ${formatDate(c.created_at)}</span>
+                        <span>📍 ${escapeHtml([c.address, c.ward_name].filter(Boolean).join(", ") || "Location not specified")}</span>
+                        ${c.latitude && c.longitude ? `<span>🌐 ${Number(c.latitude).toFixed(4)}, ${Number(c.longitude).toFixed(4)}</span>` : ""}
+                        <span>Priority: <strong>${escapeHtml(c.priority || "Medium")}</strong></span>
+                    </div>
+                    ${c.image_path ? `
+                        <div class="linked-comp-attachment">
+                            <img src="${escapeAttribute(c.image_path)}" class="thumb-img" alt="Evidence" onclick="openLightbox('${escapeAttribute(c.image_path)}')">
+                            <div>
+                                <small>Photo Evidence (Click to enlarge)</small>
+                                ${c.image_analysis ? `<div class="vision-analysis-text">${escapeHtml(c.image_analysis)}</div>` : ""}
+                            </div>
+                        </div>
+                    ` : ""}
+                </div>
+            `).join("");
+        }
+
+        // Render Notifications Trail
+        const notifList = $("modalNotificationsList");
+        const notifs = group.notifications || [];
+        if (!notifs.length) {
+            notifList.innerHTML = `<p class="muted">No notifications sent yet. Status updates will dispatch alerts to all reporting citizens.</p>`;
+        } else {
+            notifList.innerHTML = notifs.map(n => `
+                <div class="notification-item ${escapeHtml(n.notification_type)}">
+                    <span class="notif-badge">${n.notification_type === 'issue_resolved' ? '✓ RESOLVED' : 'ℹ UPDATE'}</span>
+                    <div>
+                        <strong>${escapeHtml(n.title)} <small>(${escapeHtml(n.complaint_reference)})</small></strong>
+                        <p>${escapeHtml(n.message)}</p>
+                        <small>${formatDate(n.sent_at)} · Delivered to Citizen</small>
+                    </div>
+                </div>
+            `).join("");
+        }
+
+        // Leaflet Map inside Modal
+        setTimeout(() => {
+            initOrUpdateModalMap(group);
+        }, 150);
+
+    } catch (err) {
+        alert("Failed to load group details: " + err.message);
+    }
+};
+
+window.closeGroupModal = function() {
+    const modal = $("groupModal");
+    if (modal) {
+        modal.classList.add("hidden");
+        modal.style.display = "none";
+    }
+};
+
+function initOrUpdateModalMap(group) {
+    const mapEl = $("modalGroupMap");
+    if (!mapEl || !window.L) return;
+
+    if (!modalGroupMap) {
+        modalGroupMap = L.map("modalGroupMap").setView(BLR, 13);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            attribution: "© OpenStreetMap contributors"
+        }).addTo(modalGroupMap);
+    }
+
+    // Clear old markers
+    modalMarkers.forEach(m => modalGroupMap.removeLayer(m));
+    modalMarkers = [];
+
+    const complaintsWithGeo = (group.complaints || []).filter(c => c.latitude && c.longitude);
+    const bounds = [];
+
+    complaintsWithGeo.forEach((c) => {
+        const marker = L.marker([c.latitude, c.longitude]).addTo(modalGroupMap);
+        marker.bindPopup(`
+            <strong>${escapeHtml(c.reference)}</strong><br>
+            ${escapeHtml(c.title)}<br>
+            <small>${escapeHtml(c.address || c.ward_name || "")}</small>
+        `);
+        modalMarkers.push(marker);
+        bounds.push([c.latitude, c.longitude]);
+    });
+
+    if (group.latitude && group.longitude && complaintsWithGeo.length === 0) {
+        const centroidMarker = L.circleMarker([group.latitude, group.longitude], {
+            radius: 8,
+            color: "#1c6b4b",
+            fillColor: "#c8f06a",
+            fillOpacity: 0.9,
+            weight: 2
+        }).addTo(modalGroupMap);
+        centroidMarker.bindPopup(`<strong>${escapeHtml(group.title)}</strong><br>Consolidated issue center`);
+        modalMarkers.push(centroidMarker);
+        bounds.push([group.latitude, group.longitude]);
+    }
+
+    modalGroupMap.invalidateSize();
+    if (bounds.length > 0) {
+        if (bounds.length === 1) {
+            modalGroupMap.setView(bounds[0], 15);
+        } else {
+            modalGroupMap.fitBounds(bounds, { padding: [25, 25] });
+        }
+    } else {
+        modalGroupMap.setView(BLR, 12);
+    }
+}
+
+window.openLightbox = function(src) {
+    const box = $("imageLightbox");
+    const img = $("lightboxImg");
+    if (box && img) {
+        img.src = src;
+        box.style.display = "flex";
+        box.classList.remove("hidden");
+    }
+};
+
+window.closeLightbox = function() {
+    const box = $("imageLightbox");
+    const img = $("lightboxImg");
+    if (box) {
+        box.classList.add("hidden");
+        box.style.display = "none";
+    }
+    if (img) {
+        img.src = "";
+    }
+};
+
+window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+        closeLightbox();
+        closeGroupModal();
+    }
+});

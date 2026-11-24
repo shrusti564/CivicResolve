@@ -1,6 +1,346 @@
-﻿<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CivicResolve | Admin</title><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><link rel="stylesheet" href="/static/styles.css"></head><body><header class="topbar"><a class="brand" href="/"><span class="brand-mark">C</span><span>Civic<span class="brand-accent">Resolve</span><small>BENGALURU Â· CIVIC INTELLIGENCE</small></span></a><nav><a href="/">Citizen portal</a><a href="/track">Track complaint</a><a class="active" href="/admin">Admin dashboard</a></nav><span class="live-pill"><i></i> ADMIN VIEW</span></header><main class="dashboard-wrap"><section class="dash-title"><div><div class="eyebrow">OPERATIONS OVERVIEW / BENGALURU</div><h1>Civic intelligence <em>dashboard.</em></h1><p>Monitor incoming issues, location coverage and resolution progress.</p></div><div class="dash-actions"><button class="btn btn-outline" id="refreshBtn">â†» Refresh data</button><button class="btn btn-primary" id="ingestBtn">Re-index knowledge base</button></div></section><div id="demoNotice" class="demo-notice hidden">DEMO DATA Â· Dashboard KPIs use synthetic starter rows until real citizen submissions are recorded.</div><section class="kpi-grid"><article class="kpi-card"><span>Total complaints</span><strong id="kpiTotal">â€”</strong><small>All recorded submissions</small><b class="kpi-symbol">â–¤</b></article><article class="kpi-card"><span>Open complaints</span><strong id="kpiOpen">â€”</strong><small>Awaiting closure</small><b class="kpi-symbol">â—·</b></article><article class="kpi-card"><span>Resolved</span><strong id="kpiResolved">â€”</strong><small>Marked resolved</small><b class="kpi-symbol">âœ“</b></article><article class="kpi-card"><span>Resolution rate</span><strong id="kpiRate">â€”</strong><small>Resolved / total</small><b class="kpi-symbol">â†—</b></article><article class="kpi-card"><span>Dataset period</span><strong id="kpiMonth">â€”</strong><small>Historical dataset, 2019–2022</small><b class="kpi-symbol">â–¦</b></article><article class="kpi-card"><span>GPS tagged</span><strong id="kpiGeo">â€”</strong><small>With coordinates</small><b class="kpi-symbol">âŒ–</b></article></section>
-<section class="charts-grid"><article class="panel chart-panel"><div class="panel-head"><div><span class="step">ISSUE PROFILE</span><h3>Complaints by category</h3></div></div><canvas id="categoryChart"></canvas></article><article class="panel chart-panel"><div class="panel-head"><div><span class="step">WORKFLOW</span><h3>Current status mix</h3></div></div><canvas id="statusChart"></canvas></article><article class="panel chart-panel chart-wide"><div class="panel-head"><div><span class="step">TREND</span><h3>Complaint trend by year</h3></div></div><canvas id="monthlyChart"></canvas></article></section>
-<section class="panel table-panel"><div class="panel-head"><div><span class="step">CASE MANAGEMENT</span><h3>Complaint register</h3><p>Live CivicResolve submissions only. Historical records are shown in the charts above.</p></div><input id="tableSearch" class="search-input" placeholder="Search complaints..."></div><div class="table-scroll"><table><thead><tr><th>Reference</th><th>Issue</th><th>Category</th><th>Location / ward</th><th>Submitted</th><th>Status</th><th>Update</th></tr></thead><tbody id="complaintRows"><tr><td colspan="7" class="empty-state">Loading complaintsâ€¦</td></tr></tbody></table></div></section>
-<section class="lower-grid"><article class="panel map-panel"><div class="panel-head"><div><span class="step">GEO INTELLIGENCE</span><h3>Complaint locations</h3></div></div><div id="adminMap" class="map admin-map"></div><p class="muted tiny">Pins show submitted GPS coordinates only. Ward polygons appear after the GBA 2025 GeoJSON is downloaded.</p></article><article class="panel dataset-panel"><div class="panel-head"><div><span class="step">PUBLIC DATA</span><h3>Bengaluru dataset library</h3></div></div><div id="datasetList" class="dataset-list">Loading dataset inventoryâ€¦</div><a class="text-link" href="https://data.opencity.in/" target="_blank" rel="noopener">OpenCity data portal â†—</a></article></section><footer><span>Â© 2026 CivicResolve Â· Academic prototype</span><span>Do not interpret historical ward data as current boundaries without a verified crosswalk.</span></footer></main><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script><script src="/static/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CivicResolve | Admin</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark">C</span>
+      <span>Civic<span class="brand-accent">Resolve</span><small>BENGALURU · CIVIC INTELLIGENCE</small></span>
+    </a>
+    <nav>
+      <a href="/">Citizen portal</a>
+      <a href="/track">Track complaint</a>
+      <a class="active" href="/admin">Admin dashboard</a>
+    </nav>
+    <span class="live-pill"><i></i> ADMIN VIEW</span>
+  </header>
 
+  <main class="dashboard-wrap">
+    <section class="dash-title">
+      <div>
+        <div class="eyebrow">OPERATIONS OVERVIEW / BENGALURU</div>
+        <h1>Civic intelligence <em>dashboard.</em></h1>
+        <p>Monitor incoming issues, duplicate clustering, location coverage and resolution progress.</p>
+      </div>
+      <div class="dash-actions">
+        <button class="btn btn-outline" id="refreshBtn">↻ Refresh data</button>
+        <button class="btn btn-primary" id="ingestBtn">Re-index knowledge base</button>
+      </div>
+    </section>
 
+    <div id="demoNotice" class="demo-notice hidden">DEMO DATA · Dashboard KPIs use synthetic starter rows until real citizen submissions are recorded.</div>
+
+    <section class="kpi-grid">
+      <article class="kpi-card">
+        <span>Total complaints</span>
+        <strong id="kpiTotal">—</strong>
+        <small>All recorded submissions</small>
+        <b class="kpi-symbol">▤</b>
+      </article>
+      <article class="kpi-card">
+        <span>Consolidated Issues</span>
+        <strong id="kpiGroups">—</strong>
+        <small id="kpiGroupsSub">Clustered issues</small>
+        <b class="kpi-symbol">◈</b>
+      </article>
+      <article class="kpi-card">
+        <span>Open complaints</span>
+        <strong id="kpiOpen">—</strong>
+        <small>Awaiting closure</small>
+        <b class="kpi-symbol">▷</b>
+      </article>
+      <article class="kpi-card">
+        <span>Resolved</span>
+        <strong id="kpiResolved">—</strong>
+        <small>Marked resolved</small>
+        <b class="kpi-symbol">✓</b>
+      </article>
+      <article class="kpi-card">
+        <span>Resolution rate</span>
+        <strong id="kpiRate">—</strong>
+        <small>Resolved / total</small>
+        <b class="kpi-symbol">↗</b>
+      </article>
+      <article class="kpi-card">
+        <span>GPS tagged</span>
+        <strong id="kpiGeo">—</strong>
+        <small>With coordinates</small>
+        <b class="kpi-symbol">⌖</b>
+      </article>
+    </section>
+
+    <!-- SECTION: CONSOLIDATED ISSUES (DUPLICATE COMPLAINT CLUSTERING) -->
+    <section class="panel consolidated-panel" id="consolidatedIssuesSection">
+      <div class="panel-head">
+        <div>
+          <div class="cluster-badge-row">
+            <span class="step">AI CLUSTER INTELLIGENCE</span>
+            <span class="cluster-summary-pill" id="clusterSummaryPill">Loading cluster intelligence...</span>
+          </div>
+          <h3>Consolidated Issues</h3>
+          <p>Automated semantic & geographic duplicate clustering groups multiple citizen complaints into single actionable issues.</p>
+        </div>
+        <div class="consolidated-toolbar">
+          <input id="groupSearch" class="search-input" placeholder="Search issues, wards, ref...">
+          <select id="groupCategoryFilter" class="filter-select">
+            <option value="">All categories</option>
+            <option>Roads & potholes</option>
+            <option>Garbage & waste</option>
+            <option>Streetlights</option>
+            <option>Drainage & flooding</option>
+            <option>Water supply</option>
+            <option>Other</option>
+          </select>
+          <select id="groupStatusFilter" class="filter-select">
+            <option value="">All statuses</option>
+            <option>Submitted</option>
+            <option>Under Review</option>
+            <option>In Progress</option>
+            <option>Resolved</option>
+            <option>Rejected</option>
+          </select>
+          <div class="view-switchers">
+            <button class="toggle-btn active" id="viewCardsBtn" type="button" title="Card View">Cards</button>
+            <button class="toggle-btn" id="viewTableBtn" type="button" title="Table View">Table</button>
+          </div>
+          <button class="btn btn-outline btn-sm" id="reclusterBtn" title="Re-cluster complaints">↺ Re-cluster</button>
+        </div>
+      </div>
+
+      <!-- Cards Grid View -->
+      <div class="consolidated-grid" id="consolidatedCards">
+        <div class="empty-state">Loading consolidated issues…</div>
+      </div>
+
+      <!-- Table View -->
+      <div class="table-scroll hidden" id="consolidatedTableView">
+        <table class="consolidated-table">
+          <thead>
+            <tr>
+              <th>Issue ID</th>
+              <th>Consolidated Issue</th>
+              <th>Category</th>
+              <th>Location / Ward</th>
+              <th>Affected Citizens</th>
+              <th>Timeline</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="consolidatedTableRows">
+            <tr><td colspan="8" class="empty-state">Loading consolidated issues…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="charts-grid">
+      <article class="panel chart-panel">
+        <div class="panel-head"><div><span class="step">ISSUE PROFILE</span><h3>Complaints by category</h3></div></div>
+        <canvas id="categoryChart"></canvas>
+      </article>
+      <article class="panel chart-panel">
+        <div class="panel-head"><div><span class="step">WORKFLOW</span><h3>Current status mix</h3></div></div>
+        <canvas id="statusChart"></canvas>
+      </article>
+      <article class="panel chart-panel chart-wide">
+        <div class="panel-head"><div><span class="step">TREND</span><h3>Complaint trend by year</h3></div></div>
+        <canvas id="monthlyChart"></canvas>
+      </article>
+    </section>
+
+    <!-- LIVE INDIVIDUAL COMPLAINTS REGISTER -->
+    <section class="panel table-panel">
+      <div class="panel-head">
+        <div>
+          <span class="step">CASE MANAGEMENT</span>
+          <h3>Individual Complaint Register</h3>
+          <p>Every individual citizen submission is preserved as a distinct record linked to its consolidated issue.</p>
+        </div>
+        <input id="tableSearch" class="search-input" placeholder="Search complaints...">
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Reference</th>
+              <th>Issue</th>
+              <th>Category</th>
+              <th>Consolidated Group</th>
+              <th>Location / ward</th>
+              <th>Submitted</th>
+              <th>Status</th>
+              <th>Update</th>
+            </tr>
+          </thead>
+          <tbody id="complaintRows">
+            <tr><td colspan="8" class="empty-state">Loading complaints…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="lower-grid">
+      <article class="panel map-panel">
+        <div class="panel-head"><div><span class="step">GEO INTELLIGENCE</span><h3>Complaint locations</h3></div></div>
+        <div id="adminMap" class="map admin-map"></div>
+        <p class="muted tiny">Pins show submitted GPS coordinates only. Ward polygons appear after the GBA 2025 GeoJSON is downloaded.</p>
+      </article>
+      <article class="panel dataset-panel">
+        <div class="panel-head"><div><span class="step">PUBLIC DATA</span><h3>Bengaluru dataset library</h3></div></div>
+        <div id="datasetList" class="dataset-list">Loading dataset inventory…</div>
+        <a class="text-link" href="https://data.opencity.in/" target="_blank" rel="noopener">OpenCity data portal ↗</a>
+      </article>
+    </section>
+
+    <footer>
+      <span>© 2026 CivicResolve · Academic prototype</span>
+      <span>Do not interpret historical ward data as current boundaries without a verified crosswalk.</span>
+    </footer>
+  </main>
+
+  <!-- GROUP DETAILS MODAL / DRAWER -->
+  <div id="groupModal" class="modal-backdrop hidden" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="modalGroupTitle">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div>
+          <div class="modal-ref-row">
+            <span class="modal-group-id" id="modalGroupRef">GRP-000000</span>
+            <span class="category-chip" id="modalGroupCategory">Category</span>
+            <span class="status-chip" id="modalGroupStatus">Status</span>
+          </div>
+          <h2 id="modalGroupTitle">Consolidated Issue Title</h2>
+        </div>
+        <button class="modal-close-btn" id="modalCloseBtn" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Hero Impact Banner -->
+        <div class="impact-hero-card">
+          <div class="impact-icon-col">
+            <span class="impact-emoji">👥</span>
+            <strong id="modalCitizenCount" class="impact-count">1</strong>
+            <small>Citizens Affected</small>
+          </div>
+          <div class="impact-details-col">
+            <div class="impact-meta-item">
+              <span>Location / Ward:</span>
+              <strong id="modalGroupLocation">—</strong>
+            </div>
+            <div class="impact-meta-item">
+              <span>First Reported:</span>
+              <strong id="modalFirstReported">—</strong>
+            </div>
+            <div class="impact-meta-item">
+              <span>Latest Report:</span>
+              <strong id="modalLastReported">—</strong>
+            </div>
+            <div class="impact-meta-item">
+              <span>Assigned To:</span>
+              <strong id="modalAssigned">—</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI Summary Card -->
+        <div class="modal-section-card ai-summary-card">
+          <div class="card-subtitle-row">
+            <span class="step">AI CONSOLIDATED INTELLIGENCE</span>
+            <span class="ai-pill">✨ Auto-Synthesized</span>
+          </div>
+          <p id="modalGroupSummary" class="ai-summary-text">—</p>
+        </div>
+
+        <!-- Status Management & Resolution Synchronization Form -->
+        <div class="modal-section-card management-card">
+          <div class="card-subtitle-row">
+            <span class="step">RESOLUTION & DISPATCH</span>
+            <span class="sync-pill">⚡ Synchronizes to all citizen complaints</span>
+          </div>
+          <form id="groupStatusForm" class="group-management-form">
+            <input type="hidden" id="modalGroupId">
+            <div class="form-row">
+              <label>Update Consolidated Status
+                <select id="modalStatusSelect" required>
+                  <option value="Submitted">Submitted</option>
+                  <option value="Under Review">Under Review</option>
+                  <option value="In Progress">In Progress</option>
+                  <option value="Resolved">Resolved</option>
+                  <option value="Rejected">Rejected</option>
+                </select>
+              </label>
+              <label>Assign Department
+                <input id="modalDepartmentInput" placeholder="e.g. BBMP Road Infrastructure / BWSSB">
+              </label>
+            </div>
+            <div class="form-row">
+              <label>Assign Officer / Field Team
+                <input id="modalOfficerInput" placeholder="e.g. Assistant Executive Engineer (AEE)">
+              </label>
+              <label>Action Remarks / Resolution Note
+                <input id="modalRemarksInput" placeholder="e.g. Road repair crew dispatched to junction">
+              </label>
+            </div>
+            <div class="management-btn-row">
+              <button type="submit" class="btn btn-primary" id="saveGroupStatusBtn">
+                Update Status & Notify Citizens <span>→</span>
+              </button>
+              <span id="groupActionStatus" class="form-action-msg"></span>
+            </div>
+          </form>
+        </div>
+
+        <!-- Group Geographic Map -->
+        <div class="modal-section-card">
+          <div class="card-subtitle-row">
+            <span class="step">GEOGRAPHIC DISTRIBUTION</span>
+            <small class="muted" id="modalMapSub">Complaint coordinates across locality</small>
+          </div>
+          <div id="modalGroupMap" class="modal-map"></div>
+        </div>
+
+        <!-- Individual Complaints List -->
+        <div class="modal-section-card">
+          <div class="card-subtitle-row">
+            <span class="step">LINKED CITIZEN REPORTS (<span id="modalLinkedCount">0</span>)</span>
+            <small class="muted">All citizen submissions contributing to this issue</small>
+          </div>
+          <div id="modalComplaintsList" class="linked-complaints-list">
+            Loading linked citizen reports…
+          </div>
+        </div>
+
+        <!-- Citizen Notification Audit Trail -->
+        <div class="modal-section-card">
+          <div class="card-subtitle-row">
+            <span class="step">CITIZEN NOTIFICATION AUDIT TRAIL</span>
+            <small class="muted">Delivered resolution & status alerts</small>
+          </div>
+          <div id="modalNotificationsList" class="notifications-history-list">
+            No notifications sent yet.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Lightbox Modal -->
+  <div id="imageLightbox" class="lightbox-backdrop hidden" style="display: none;" onclick="closeLightbox()">
+    <div class="lightbox-content" onclick="event.stopPropagation()">
+      <img id="lightboxImg" src="" alt="Evidence photo">
+      <button class="lightbox-close" type="button" onclick="closeLightbox()">✕</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

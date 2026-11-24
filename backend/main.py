@@ -7,17 +7,56 @@ from datetime import datetime
 from collections import Counter
 import uuid, shutil, os, calendar
 from dotenv import load_dotenv
-from .database import init_db, create_complaint, list_complaints, get_complaint_by_id, update_status, get_status_history
-from .geo import lookup_ward
-from .analytics import (
-    get_dashboard_kpis,
-    get_category_statistics,
-    get_status_statistics,
-    get_monthly_statistics,
-    get_ward_statistics
-)
-from .rag import ingest_knowledge, retrieve
-from .datasets import inventory
+try:
+    from .database import (
+        init_db,
+        create_complaint,
+        list_complaints,
+        get_complaint_by_id,
+        update_status,
+        get_status_history,
+        get_complaint_group,
+        list_complaint_groups,
+        update_group_status,
+        get_notifications_for_complaint,
+        get_notifications_for_group
+    )
+    from .clustering import process_complaint_clustering, cluster_all_unassigned_complaints, recluster_all_complaints
+    from .geo import lookup_ward
+    from .analytics import (
+        get_dashboard_kpis,
+        get_category_statistics,
+        get_status_statistics,
+        get_monthly_statistics,
+        get_ward_statistics
+    )
+    from .rag import ingest_knowledge, retrieve
+    from .datasets import inventory
+except (ImportError, ValueError):
+    from database import (
+        init_db,
+        create_complaint,
+        list_complaints,
+        get_complaint_by_id,
+        update_status,
+        get_status_history,
+        get_complaint_group,
+        list_complaint_groups,
+        update_group_status,
+        get_notifications_for_complaint,
+        get_notifications_for_group
+    )
+    from clustering import process_complaint_clustering, cluster_all_unassigned_complaints, recluster_all_complaints
+    from geo import lookup_ward
+    from analytics import (
+        get_dashboard_kpis,
+        get_category_statistics,
+        get_status_statistics,
+        get_monthly_statistics,
+        get_ward_statistics
+    )
+    from rag import ingest_knowledge, retrieve
+    from datasets import inventory
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / '.env')
@@ -60,6 +99,7 @@ def startup():
         for ref,title,desc,cat,priority,status in samples:
             row = create_complaint({'reference':ref,'title':title,'description':desc,'category':cat,'priority':priority,'location_source':'demo'})
             update_status(row['id'], status)
+    cluster_all_unassigned_complaints()
 
 @app.get('/', response_class=HTMLResponse)
 def home(): return (ROOT / 'frontend' / 'index.html').read_text(encoding='utf-8')
@@ -79,6 +119,37 @@ def ward(latitude: float, longitude: float):
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180): raise HTTPException(400, 'Invalid coordinates')
     return lookup_ward(latitude, longitude)
 
+def process_new_complaint(title: str, description: str, category: str, priority: str = 'Medium', latitude: float | None = None, longitude: float | None = None, address: str = '', location_source: str = 'manual', image_path: str | None = None, image_analysis: str | None = None):
+    geo = lookup_ward(latitude, longitude) if latitude is not None else {}
+    ref = 'CR-' + datetime.now().strftime('%y%m%d') + '-' + uuid.uuid4().hex[:6].upper()
+    item = create_complaint({
+        "reference": ref,
+        "title": title.strip(),
+        "description": description.strip(),
+        "category": category,
+        "priority": priority,
+        "latitude": latitude,
+        "longitude": longitude,
+        "address": address.strip() or None,
+        "ward_name": geo.get('ward_name'),
+        "corporation": geo.get('corporation'),
+        "location_source": location_source,
+        "image_path": image_path,
+        "image_analysis": image_analysis
+    })
+    item['ward_lookup'] = geo
+
+    # Automatic duplicate detection and clustering
+    group = process_complaint_clustering(item['id'])
+    if group:
+        item['group_id'] = group['id']
+        item['group_reference'] = group['reference']
+        item['group_title'] = group['title']
+        item['group_summary'] = group['summary']
+        item['complaints_count'] = group['complaints_count']
+        item['is_duplicate'] = group['complaints_count'] > 1
+    return item
+
 @app.post('/api/complaints')
 async def submit_complaint(title: str = Form(...), description: str = Form(...), category: str = Form(...), priority: str = Form('Medium'), latitude: float | None = Form(None), longitude: float | None = Form(None), address: str = Form(''), location_source: str = Form('manual'), image: UploadFile | None = File(None)):
     allowed = {'Roads & potholes','Garbage & waste','Streetlights','Drainage & flooding','Water supply','Other'}
@@ -89,7 +160,7 @@ async def submit_complaint(title: str = Form(...), description: str = Form(...),
     image_path = None
     image_analysis = None
     image_bytes = None
-    if image and image.filename:
+    if image is not None and hasattr(image, 'filename') and image.filename:
         ext = Path(image.filename).suffix.lower()
         if ext not in {'.jpg','.jpeg','.png','.webp'}: raise HTTPException(400, 'Only JPG, PNG and WEBP images are supported')
         image_bytes = await image.read(MAX_IMAGE_BYTES + 1)
@@ -116,11 +187,18 @@ async def submit_complaint(title: str = Form(...), description: str = Form(...),
                 image_analysis = vision.text
             except Exception as e:
                 image_analysis = 'Image saved; optional vision analysis was unavailable.'
-    geo = lookup_ward(latitude, longitude) if latitude is not None else {}
-    ref = 'CR-' + datetime.now().strftime('%y%m%d') + '-' + uuid.uuid4().hex[:6].upper()
-    item = create_complaint({"reference":ref,"title":title.strip(),"description":description.strip(),"category":category,"priority":priority,"latitude":latitude,"longitude":longitude,"address":address.strip() or None,"ward_name":geo.get('ward_name'),"corporation":geo.get('corporation'),"location_source":location_source,"image_path":image_path,"image_analysis":image_analysis})
-    item['ward_lookup'] = geo
-    return item
+    return process_new_complaint(
+        title=title,
+        description=description,
+        category=category,
+        priority=priority,
+        latitude=latitude,
+        longitude=longitude,
+        address=address,
+        location_source=location_source,
+        image_path=image_path,
+        image_analysis=image_analysis
+    )
 
 @app.get('/api/complaints')
 def complaints(): return list_complaints()
@@ -135,6 +213,20 @@ def track_complaint(reference: str):
         raise HTTPException(404, 'No complaint found with that reference number.')
     item = dict(row)
     item['status_history'] = get_status_history(item['id'])
+    item['notifications'] = get_notifications_for_complaint(item['id'])
+    if item.get('group_id'):
+        grp = get_complaint_group(item['group_id'])
+        if grp:
+            item['group'] = {
+                'id': grp['id'],
+                'reference': grp['reference'],
+                'title': grp['title'],
+                'summary': grp['summary'],
+                'complaints_count': grp['complaints_count'],
+                'status': grp['status'],
+                'first_reported_at': grp['first_reported_at'],
+                'last_reported_at': grp['last_reported_at']
+            }
     return item
 
 class StatusUpdate(BaseModel):
@@ -147,17 +239,74 @@ def change_status(cid:int, body:StatusUpdate):
     if not update_status(cid, body.status, body.remarks): raise HTTPException(404,'Complaint not found')
     return get_complaint_by_id(cid)
 
+class GroupStatusUpdate(BaseModel):
+    status: str
+    remarks: str | None = None
+    assigned_department: str | None = None
+    assigned_officer: str | None = None
+
+@app.get('/api/groups')
+def get_groups(status: str | None = None, category: str | None = None, search: str | None = None):
+    groups = list_complaint_groups(status=status, category=category, search=search)
+    total_citizens = sum(g.get('complaints_count', 1) for g in groups)
+    multi_report_count = sum(1 for g in groups if g.get('complaints_count', 1) > 1)
+    return {
+        "groups": groups,
+        "total_groups": len(groups),
+        "total_citizens": total_citizens,
+        "multi_report_groups": multi_report_count
+    }
+
+@app.get('/api/groups/{gid}')
+def get_group(gid: int):
+    grp = get_complaint_group(gid)
+    if not grp:
+        raise HTTPException(404, 'Consolidated issue not found')
+    grp['notifications'] = get_notifications_for_group(gid)
+    return grp
+
+@app.patch('/api/groups/{gid}/status')
+def change_group_status(gid: int, body: GroupStatusUpdate):
+    allowed = {'Submitted', 'Under Review', 'In Progress', 'Resolved', 'Rejected'}
+    if body.status not in allowed:
+        raise HTTPException(400, 'Invalid status')
+    if body.remarks and len(body.remarks) > 2000:
+        raise HTTPException(400, 'Remarks must be 2000 characters or fewer')
+    updated = update_group_status(
+        gid,
+        body.status,
+        remarks=body.remarks,
+        updated_by='Admin',
+        assigned_department=body.assigned_department,
+        assigned_officer=body.assigned_officer
+    )
+    if not updated:
+        raise HTTPException(404, 'Consolidated issue not found')
+    return updated
+
+@app.post('/api/groups/recluster')
+def trigger_recluster(force: bool = True):
+    return recluster_all_complaints(force=force)
+
 @app.get("/api/dashboard/historical")
 def historical_dashboard():
-    """Historical Bengaluru civic complaint analytics."""
+    """Historical Bengaluru civic complaint analytics with automatic live fallback."""
+    try:
+        return {
+            "kpis": get_dashboard_kpis(),
+            "categories": get_category_statistics(),
+            "statuses": get_status_statistics(),
+            "monthly": get_monthly_statistics(),
+            "wards": get_ward_statistics()
+        }
+    except Exception:
+        return dashboard()
 
-    return {
-        "kpis": get_dashboard_kpis(),
-        "categories": get_category_statistics(),
-        "statuses": get_status_statistics(),
-        "monthly": get_monthly_statistics(),
-        "wards": get_ward_statistics()
-    }
+
+@app.get("/api/dashboard")
+def live_dashboard():
+    """Live complaints analytics endpoint."""
+    return dashboard()
 
 
 @app.get("/api/dashboard/historical/geo")
@@ -166,35 +315,59 @@ def historical_geo():
 
     from .analytics import load_complaints
 
-    df = load_complaints()
-    df = df.dropna(subset=["latitude", "longitude"])
+    try:
+        df = load_complaints()
+        df = df.dropna(subset=["latitude", "longitude"])
 
-    records = df[
-        [
-            "latitude",
-            "longitude",
-            "category_title",
-            "complaint_status_title",
-            "ward_title"
-        ]
-    ].to_dict(orient="records")
+        records = df[
+            [
+                "latitude",
+                "longitude",
+                "category_title",
+                "complaint_status_title",
+                "ward_title"
+            ]
+        ].to_dict(orient="records")
 
-    return {
-        "data_type": "historical",
-        "period": "2019-2022",
-        "total_points": len(records),
-        "points": records
-    }
+        return {
+            "data_type": "historical",
+            "period": "2019-2022",
+            "total_points": len(records),
+            "points": records
+        }
+    except Exception:
+        return {"data_type": "live", "points": [], "total_points": 0}
 
 def dashboard():
     rows = list_complaints()
-    total=len(rows); resolved=sum(r['status']=='Resolved' for r in rows); open_count=sum(r['status'] not in {'Resolved','Rejected'} for r in rows)
-    now=datetime.utcnow(); month_count=sum((r['created_at'] or '')[:7]==now.strftime('%Y-%m') for r in rows)
-    geo_count=sum(r['latitude'] is not None and r['longitude'] is not None for r in rows)
-    categories=dict(Counter(r['category'] for r in rows)); statuses=dict(Counter(r['status'] for r in rows))
-    monthly=Counter((r['created_at'] or '')[:7] for r in rows)
-    months=sorted(monthly.keys())[-6:]
-    return {"kpis":{"total":total,"open":open_count,"resolved":resolved,"resolution_rate":round(resolved/total*100,1) if total else 0,"this_month":month_count,"geo_tagged":geo_count},"categories":categories,"statuses":statuses,"monthly":{"labels":months,"values":[monthly[m] for m in months]},"demo_notice":total>0 and all(r['reference'].startswith('DEMO-') for r in rows)}
+    total = len(rows)
+    resolved = sum(r['status'] == 'Resolved' for r in rows)
+    open_count = sum(r['status'] not in {'Resolved', 'Rejected'} for r in rows)
+    now = datetime.now()
+    month_count = sum((r['created_at'] or '')[:7] == now.strftime('%Y-%m') for r in rows)
+    geo_count = sum(r['latitude'] is not None and r['longitude'] is not None for r in rows)
+    cat_counts = Counter(r['category'] for r in rows)
+    categories = [{"category": c, "complaints": count} for c, count in cat_counts.most_common()]
+    stat_counts = Counter(r['status'] for r in rows)
+    statuses = [{"status": s, "complaints": count} for s, count in stat_counts.items()]
+    monthly = Counter((r['created_at'] or '')[:7] for r in rows)
+    months = sorted([m for m in monthly.keys() if m])
+    monthly_data = [{"month": m, "complaints": monthly[m]} for m in months]
+    return {
+        "kpis": {
+            "total_complaints": total,
+            "open_complaints": open_count,
+            "resolved_complaints": resolved,
+            "resolution_rate_percent": round(resolved / total * 100, 1) if total else 0,
+            "this_month": month_count,
+            "records_with_gps": geo_count
+        },
+        "categories": categories,
+        "statuses": statuses,
+        "monthly": monthly_data,
+        "data_type": "live",
+        "demo_notice": total > 0 and all(r['reference'].startswith('DEMO-') for r in rows)
+    }
 
 class AskRequest(BaseModel): question: str
 @app.post('/api/ask')

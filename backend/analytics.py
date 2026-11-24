@@ -10,8 +10,14 @@ DATASET_PATH = (
 )
 
 
+_cached_df = None
+
+
 def load_complaints():
-    """Load and clean historical Bengaluru complaints."""
+    """Load and clean historical Bengaluru complaints with in-memory caching."""
+    global _cached_df
+    if _cached_df is not None:
+        return _cached_df
 
     if not DATASET_PATH.exists():
         raise FileNotFoundError(
@@ -35,7 +41,8 @@ def load_complaints():
         df["longitude"], errors="coerce"
     )
 
-    return df
+    _cached_df = df
+    return _cached_df
 
 
 def get_dashboard_kpis():
