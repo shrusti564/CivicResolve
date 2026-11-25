@@ -259,16 +259,26 @@ async function loadRecent() {
     }
 }
 
-// ---------------- ADMIN DASHBOARD ----------------
+// ---------------- ADMIN DASHBOARD & PRIORITY COMMAND CENTER ----------------
+
+let currentPriorityFilter = "";
+let priorityMapMarkers = [];
+let priorityHeatLayer = null;
+let heatmapActive = false;
+let priorityMapBounds = [];
+let cachedPriorityQueue = [];
 
 function initAdmin() {
-    if (!$("kpiTotal")) return;
+    if (!$("kpiTotal") && !$("adminMap")) return;
 
     initAdminMap();
+    initPriorityControls();
 
     $("refreshBtn")?.addEventListener("click", () => {
         refreshDashboard();
-        loadConsolidatedGroups();
+        loadPrioritySummary();
+        loadPriorityMapPoints();
+        loadPriorityQueue();
         loadTable();
     });
 
@@ -299,32 +309,15 @@ function initAdmin() {
         await updateComplaintStatus(select.dataset.complaintId, select.value, remarks);
     });
 
-    // Consolidated Issues event handlers
-    $("groupSearch")?.addEventListener("input", filterAndRenderConsolidated);
-    $("groupCategoryFilter")?.addEventListener("change", filterAndRenderConsolidated);
-    $("groupStatusFilter")?.addEventListener("change", filterAndRenderConsolidated);
-
-    $("viewCardsBtn")?.addEventListener("click", () => {
-        $("viewCardsBtn").classList.add("active");
-        $("viewTableBtn").classList.remove("active");
-        $("consolidatedCards").classList.remove("hidden");
-        $("consolidatedTableView").classList.add("hidden");
-    });
-
-    $("viewTableBtn")?.addEventListener("click", () => {
-        $("viewTableBtn").classList.add("active");
-        $("viewCardsBtn").classList.remove("active");
-        $("consolidatedCards").classList.add("hidden");
-        $("consolidatedTableView").classList.remove("hidden");
-    });
-
     $("reclusterBtn")?.addEventListener("click", async () => {
         const btn = $("reclusterBtn");
         btn.disabled = true;
         btn.textContent = "Clustering…";
         try {
             await api("/api/groups/recluster", { method: "POST" });
-            await loadConsolidatedGroups();
+            await loadPrioritySummary();
+            await loadPriorityMapPoints();
+            await loadPriorityQueue();
             await loadTable();
         } catch (e) {
             alert("Re-clustering error: " + e.message);
@@ -363,7 +356,9 @@ function initAdmin() {
             statusMsg.className = "form-action-msg success";
             statusMsg.textContent = `✓ Status updated to ${status}. ${updated.complaints_count} citizens notified!`;
             await openGroupDetails(gid);
-            await loadConsolidatedGroups();
+            await loadPrioritySummary();
+            await loadPriorityMapPoints();
+            await loadPriorityQueue();
             await loadTable();
         } catch (err) {
             statusMsg.className = "form-action-msg error";
@@ -374,11 +369,443 @@ function initAdmin() {
         }
     });
 
+    // Priority manual override
+    $("savePriorityOverrideBtn")?.addEventListener("click", async () => {
+        const gid = $("modalGroupId").value;
+        const priority = $("modalPriorityOverrideSelect").value;
+        const reason = $("modalPriorityReasonInput").value.trim() || `Manual override to ${priority} by administrator`;
+        const statusMsg = $("priorityOverrideStatus");
+        const btn = $("savePriorityOverrideBtn");
+
+        btn.disabled = true;
+        statusMsg.className = "form-action-msg";
+        statusMsg.textContent = "Updating priority...";
+
+        try {
+            await api(`/api/groups/${gid}/priority`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ priority, reason, overridden_by: "Administrator" })
+            });
+            statusMsg.className = "form-action-msg success";
+            statusMsg.textContent = `✓ Priority updated to ${priority}!`;
+            await openGroupDetails(gid);
+            await loadPrioritySummary();
+            await loadPriorityMapPoints();
+            await loadPriorityQueue();
+        } catch (err) {
+            statusMsg.className = "form-action-msg error";
+            statusMsg.textContent = `Override failed: ${err.message}`;
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
     refreshDashboard();
-    loadConsolidatedGroups();
+    loadPrioritySummary();
+    loadPriorityMapPoints();
+    loadPriorityQueue();
     loadTable();
     loadDatasets();
 }
+
+function initPriorityControls() {
+    // View Switchers: Queue Table vs Cards
+    $("viewQueueTableBtn")?.addEventListener("click", () => {
+        $("viewQueueTableBtn")?.classList.add("active");
+        $("viewQueueCardsBtn")?.classList.remove("active");
+        $("queueTableView")?.classList.remove("hidden");
+        $("queueCardsView")?.classList.add("hidden");
+    });
+
+    $("viewQueueCardsBtn")?.addEventListener("click", () => {
+        $("viewQueueCardsBtn")?.classList.add("active");
+        $("viewQueueTableBtn")?.classList.remove("active");
+        $("queueTableView")?.classList.add("hidden");
+        $("queueCardsView")?.classList.remove("hidden");
+    });
+
+    // Map control buttons
+    $("toggleHeatmapBtn")?.addEventListener("click", window.toggleHeatmap);
+    $("focusCriticalBtn")?.addEventListener("click", window.focusCriticalIssues);
+    $("resetMapBtn")?.addEventListener("click", window.resetMap);
+
+    // Filter controls
+    $("mapCategoryFilter")?.addEventListener("change", () => {
+        loadPriorityMapPoints();
+        loadPriorityQueue();
+    });
+
+    $("mapStatusFilter")?.addEventListener("change", () => {
+        loadPriorityMapPoints();
+        loadPriorityQueue();
+    });
+
+    let searchTimer = null;
+    $("mapSearchInput")?.addEventListener("input", () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+            loadPriorityMapPoints();
+            loadPriorityQueue();
+        }, 250);
+    });
+}
+
+async function loadPrioritySummary() {
+    try {
+        const summary = await api("/api/priority/summary");
+
+        const crit = summary.critical || 0;
+        const high = summary.high || 0;
+        const med = summary.medium || 0;
+        const low = summary.low || 0;
+        const total = summary.total_unresolved || (crit + high + med + low);
+
+        if ($("countCritical")) $("countCritical").textContent = crit;
+        if ($("countHigh")) $("countHigh").textContent = high;
+        if ($("countMedium")) $("countMedium").textContent = med;
+        if ($("countLow")) $("countLow").textContent = low;
+
+        const maxVal = Math.max(1, total);
+        if ($("barCritical")) $("barCritical").style.width = `${Math.min(100, Math.round((crit / maxVal) * 100))}%`;
+        if ($("barHigh")) $("barHigh").style.width = `${Math.min(100, Math.round((high / maxVal) * 100))}%`;
+        if ($("barMedium")) $("barMedium").style.width = `${Math.min(100, Math.round((med / maxVal) * 100))}%`;
+        if ($("barLow")) $("barLow").style.width = `${Math.min(100, Math.round((low / maxVal) * 100))}%`;
+
+        if ($("pillCountAll")) $("pillCountAll").textContent = total;
+        if ($("pillCountCritical")) $("pillCountCritical").textContent = crit;
+        if ($("pillCountHigh")) $("pillCountHigh").textContent = high;
+        if ($("pillCountMedium")) $("pillCountMedium").textContent = med;
+        if ($("pillCountLow")) $("pillCountLow").textContent = low;
+
+        if ($("clusterSummaryPill")) {
+            $("clusterSummaryPill").textContent = `${summary.total_groups || total} Consolidated Issues · ${summary.total_citizens || 0} Citizens Reporting · ${crit} Critical Hazards`;
+        }
+
+        if ($("kpiGroups")) $("kpiGroups").textContent = (summary.total_groups || 0).toLocaleString("en-IN");
+        if ($("kpiGroupsSub")) $("kpiGroupsSub").textContent = `${summary.total_citizens || 0} citizens reporting`;
+    } catch (e) {
+        console.warn("Could not load priority summary:", e);
+    }
+}
+
+function getPrioritySymbol(tier) {
+    switch (tier) {
+        case "Critical": return "!";
+        case "High": return "▲";
+        case "Medium": return "●";
+        case "Low": return "▼";
+        default: return "●";
+    }
+}
+
+async function loadPriorityMapPoints() {
+    if (!adminMap) return;
+
+    const cat = $("mapCategoryFilter")?.value || "";
+    const stat = $("mapStatusFilter")?.value ?? "Unresolved";
+    const search = ($("mapSearchInput")?.value || "").trim();
+
+    const params = new URLSearchParams();
+    if (currentPriorityFilter) params.set("priority", currentPriorityFilter);
+    if (cat) params.set("category", cat);
+    if (stat) params.set("status", stat);
+    if (search) params.set("search", search);
+
+    try {
+        const data = await api(`/api/priority/map-points?${params.toString()}`);
+        const points = data.points || [];
+
+        // Clear existing markers
+        priorityMapMarkers.forEach(m => adminMap.removeLayer(m));
+        priorityMapMarkers = [];
+
+        // Clear heatmap
+        if (priorityHeatLayer && adminMap.hasLayer(priorityHeatLayer)) {
+            adminMap.removeLayer(priorityHeatLayer);
+            priorityHeatLayer = null;
+        }
+
+        // Render Heatmap Layer if active
+        if (heatmapActive && window.L && typeof L.heatLayer === "function") {
+            const heatData = points
+                .filter(p => Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+                .map(p => [p.latitude, p.longitude, Math.max(0.4, (p.priority_score || 50) / 100)]);
+            if (heatData.length) {
+                priorityHeatLayer = L.heatLayer(heatData, {
+                    radius: 32,
+                    blur: 22,
+                    maxZoom: 16,
+                    gradient: { 0.2: '#16a34a', 0.5: '#ca8a04', 0.75: '#ea580c', 1.0: '#dc2626' }
+                }).addTo(adminMap);
+            }
+        }
+
+        priorityMapBounds = [];
+
+        // Render Markers
+        points.forEach(p => {
+            if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return;
+
+            const pClass = (p.priority || "Medium").toLowerCase();
+            const citizenCount = p.complaints_count || 1;
+            const citizenBadge = citizenCount > 1 ? `<span class="marker-citizen-badge">👥 ${citizenCount}</span>` : "";
+
+            const icon = L.divIcon({
+                className: `priority-map-marker marker-${pClass}`,
+                html: `<div class="marker-pin"><span class="marker-inner-icon">${getPrioritySymbol(p.priority)}</span></div>${citizenBadge}`,
+                iconSize: [34, 34],
+                iconAnchor: [17, 34],
+                popupAnchor: [0, -32]
+            });
+
+            const marker = L.marker([p.latitude, p.longitude], { icon }).addTo(adminMap);
+
+            const popupContent = `
+                <div class="map-popup-card">
+                    <div class="popup-top-row">
+                        <span class="popup-ref">${escapeHtml(p.reference || ('GRP-' + p.group_id))}</span>
+                        <span class="priority-badge priority-badge-${pClass}">
+                            ${pClass === 'critical' ? '🔴' : pClass === 'high' ? '🟠' : pClass === 'medium' ? '🟡' : '🟢'} ${escapeHtml(p.priority)} · ${p.priority_score}
+                        </span>
+                    </div>
+                    <h4 class="popup-title">${escapeHtml(p.title)}</h4>
+                    <p class="popup-summary">${escapeHtml(p.summary || '')}</p>
+                    <div class="popup-meta-grid">
+                        <div><span>CATEGORY</span><strong>${escapeHtml(p.category || 'General')}</strong></div>
+                        <div><span>LOCATION</span><strong>${escapeHtml(p.ward_name || p.address || 'Bengaluru')}</strong></div>
+                        <div><span>AFFECTED</span><strong>👥 ${citizenCount} citizens</strong></div>
+                        <div><span>DAYS OPEN</span><strong>${p.days_unresolved ?? 0} days</strong></div>
+                        <div><span>FIRST REPORT</span><strong>${formatDateShort(p.first_reported_at)}</strong></div>
+                        <div><span>STATUS</span><strong>${escapeHtml(p.status || 'Submitted')}</strong></div>
+                    </div>
+                    <button class="popup-btn" type="button" onclick="openGroupDetails(${Number(p.group_id)})">Manage Issue →</button>
+                </div>
+            `;
+
+            marker.bindPopup(popupContent, { maxWidth: 320 });
+            priorityMapMarkers.push(marker);
+            priorityMapBounds.push([p.latitude, p.longitude]);
+        });
+
+        if ($("mapStatusPill")) {
+            $("mapStatusPill").textContent = `${points.length} Incidents Mapped`;
+        }
+
+    } catch (e) {
+        console.error("Failed to load priority map points:", e);
+    }
+}
+
+async function loadPriorityQueue() {
+    const cat = $("mapCategoryFilter")?.value || "";
+    const stat = $("mapStatusFilter")?.value ?? "Unresolved";
+    const search = ($("mapSearchInput")?.value || "").trim();
+
+    const params = new URLSearchParams();
+    if (currentPriorityFilter) params.set("priority", currentPriorityFilter);
+    if (cat) params.set("category", cat);
+    if (stat) params.set("status", stat);
+    if (search) params.set("search", search);
+
+    try {
+        const data = await api(`/api/priority/queue?${params.toString()}`);
+        cachedPriorityQueue = data.queue || [];
+        renderPriorityQueueTable(cachedPriorityQueue);
+        renderPriorityQueueCards(cachedPriorityQueue);
+    } catch (e) {
+        if ($("priorityQueueRows")) {
+            $("priorityQueueRows").innerHTML = `<tr><td colspan="9" class="empty-state">Could not load priority queue: ${escapeHtml(e.message)}</td></tr>`;
+        }
+    }
+}
+
+function renderPriorityQueueTable(items) {
+    const tbody = $("priorityQueueRows");
+    if (!tbody) return;
+
+    if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No civic issues match the active priority/filter criteria.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = items.map(g => {
+        const pClass = (g.priority || "Medium").toLowerCase();
+        const citizenCount = g.complaints_count || 1;
+        const isMulti = citizenCount > 1;
+        const dupBadge = isMulti
+            ? `<span class="duplicate-pill high-impact">👥 ${citizenCount} reports</span>`
+            : `<span class="duplicate-pill">👤 1 report</span>`;
+        const locationText = [g.ward_name, g.address].filter(Boolean).join(" · ") || "Not provided";
+        const isOverdue = (g.days_unresolved || 0) > 7;
+
+        return `
+            <tr>
+                <td>
+                    <span class="priority-badge priority-badge-${pClass}">
+                        ${pClass === 'critical' ? '🔴' : pClass === 'high' ? '🟠' : pClass === 'medium' ? '🟡' : '🟢'} ${escapeHtml(g.priority)} · ${g.priority_score}
+                    </span>
+                </td>
+                <td><strong>${escapeHtml(g.reference)}</strong></td>
+                <td class="queue-title-cell">
+                    <strong>${escapeHtml(g.title)}</strong>
+                    <small title="${escapeAttribute(g.summary)}">${escapeHtml(g.summary)}</small>
+                </td>
+                <td>${escapeHtml(g.category)}</td>
+                <td>${escapeHtml(locationText)}</td>
+                <td>${dupBadge}</td>
+                <td>
+                    <span class="days-open-badge ${isOverdue ? 'overdue' : ''}">
+                        ${isOverdue ? '⚠️ ' : ''}${g.days_unresolved ?? 0}d
+                    </span>
+                </td>
+                <td><span class="status-chip">${escapeHtml(g.status)}</span></td>
+                <td>
+                    <button class="manage-link-btn" onclick="openGroupDetails(${Number(g.id)})" type="button">Manage ↗</button>
+                </td>
+            </tr>
+        `;
+    }).join("");
+}
+
+function renderPriorityQueueCards(items) {
+    const container = $("queueCardsView");
+    if (!container) return;
+
+    if (!items.length) {
+        container.innerHTML = `<div class="empty-state">No matching consolidated issues found.</div>`;
+        return;
+    }
+
+    container.innerHTML = items.map(g => {
+        const pClass = (g.priority || "Medium").toLowerCase();
+        const citizenCount = g.complaints_count || 1;
+        const isMulti = citizenCount > 1;
+        const dupBadge = isMulti
+            ? `<span class="duplicate-pill high-impact">👥 ${citizenCount} citizens reported</span>`
+            : `<span class="duplicate-pill">👤 1 citizen reported</span>`;
+        const locationText = [g.ward_name, g.address].filter(Boolean).join(" · ") || "Location not provided";
+        const isOverdue = (g.days_unresolved || 0) > 7;
+
+        return `
+            <article class="consolidated-card" onclick="openGroupDetails(${Number(g.id)})" style="border-top: 3px solid ${pClass === 'critical' ? '#dc2626' : pClass === 'high' ? '#ea580c' : pClass === 'medium' ? '#ca8a04' : '#16a34a'}">
+                <div>
+                    <div class="card-top-meta">
+                        <span class="card-group-ref">${escapeHtml(g.reference)}</span>
+                        <span class="priority-badge priority-badge-${pClass}">
+                            ${pClass === 'critical' ? '🔴' : pClass === 'high' ? '🟠' : pClass === 'medium' ? '🟡' : '🟢'} ${escapeHtml(g.priority)} · ${g.priority_score}
+                        </span>
+                    </div>
+                    <h4>${escapeHtml(g.title)}</h4>
+                    <p class="card-summary">${escapeHtml(g.summary)}</p>
+                    <div class="card-details-grid">
+                        <div class="card-detail-item">
+                            <span>CATEGORY</span>
+                            <strong>${escapeHtml(g.category)}</strong>
+                        </div>
+                        <div class="card-detail-item">
+                            <span>LOCATION / WARD</span>
+                            <strong>${escapeHtml(locationText)}</strong>
+                        </div>
+                        <div class="card-detail-item">
+                            <span>AFFECTED CITIZENS</span>
+                            <strong>${dupBadge}</strong>
+                        </div>
+                        <div class="card-detail-item">
+                            <span>DAYS UNRESOLVED</span>
+                            <strong class="${isOverdue ? 'error' : ''}">${g.days_unresolved ?? 0} days open</strong>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer-row">
+                    <span class="status-chip">${escapeHtml(g.status)}</span>
+                    <button class="manage-link-btn" type="button">Manage issue →</button>
+                </div>
+            </article>
+        `;
+    }).join("");
+}
+
+window.setPriorityFilter = function(tier) {
+    currentPriorityFilter = tier || "";
+
+    const tabs = {
+        "": "tabAll",
+        "Critical": "tabCritical",
+        "High": "tabHigh",
+        "Medium": "tabMedium",
+        "Low": "tabLow"
+    };
+    Object.entries(tabs).forEach(([k, id]) => {
+        if ($(id)) {
+            if (k === currentPriorityFilter) $(id).classList.add("active");
+            else $(id).classList.remove("active");
+        }
+    });
+
+    const cards = {
+        "Critical": "cardFilterCritical",
+        "High": "cardFilterHigh",
+        "Medium": "cardFilterMedium",
+        "Low": "cardFilterLow"
+    };
+    Object.entries(cards).forEach(([k, id]) => {
+        if ($(id)) {
+            if (k === currentPriorityFilter) $(id).classList.add("active");
+            else $(id).classList.remove("active");
+        }
+    });
+
+    loadPriorityMapPoints();
+    loadPriorityQueue();
+};
+
+window.togglePriorityFilter = function(tier) {
+    if (currentPriorityFilter === tier) {
+        window.setPriorityFilter("");
+    } else {
+        window.setPriorityFilter(tier);
+    }
+};
+
+window.toggleHeatmap = function() {
+    heatmapActive = !heatmapActive;
+    const btn = $("toggleHeatmapBtn");
+    if (btn) {
+        if (heatmapActive) {
+            btn.classList.add("active");
+            btn.style.background = "#eaf5ee";
+            btn.style.borderColor = "#1c6b4b";
+        } else {
+            btn.classList.remove("active");
+            btn.style.background = "";
+            btn.style.borderColor = "";
+        }
+    }
+    loadPriorityMapPoints();
+};
+
+window.focusCriticalIssues = function() {
+    window.setPriorityFilter("Critical");
+    setTimeout(() => {
+        if (priorityMapBounds.length > 0 && adminMap) {
+            if (priorityMapBounds.length === 1) {
+                adminMap.setView(priorityMapBounds[0], 16);
+            } else {
+                adminMap.fitBounds(priorityMapBounds, { padding: [50, 50], maxZoom: 16 });
+            }
+        }
+    }, 300);
+};
+
+window.resetMap = function() {
+    if (!adminMap) return;
+    if (priorityMapBounds.length > 0) {
+        adminMap.fitBounds(priorityMapBounds, { padding: [30, 30], maxZoom: 14 });
+    } else {
+        adminMap.setView(BLR, 12);
+    }
+};
 
 async function refreshDashboard() {
     let result = null;
@@ -386,16 +813,50 @@ async function refreshDashboard() {
         result = await api("/api/dashboard/historical");
     } catch (err) {
         console.warn("Historical analytics unavailable, trying live complaints dashboard:", err);
+    }
+
+    if (!result || !result.kpis) {
         try {
             result = await api("/api/dashboard");
         } catch (err2) {
-            console.error("Dashboard analytics error:", err2);
+            console.warn("Dashboard live analytics error, falling back to local calculation:", err2);
+        }
+    }
+
+    if (!result || !result.kpis) {
+        try {
+            const complaints = await api("/api/complaints");
+            const total = complaints.length;
+            const open = complaints.filter(c => c.status !== "Resolved" && c.status !== "Rejected").length;
+            const resolved = complaints.filter(c => c.status === "Resolved").length;
+            const gps = complaints.filter(c => c.latitude && c.longitude).length;
+            const catMap = {};
+            const statMap = {};
+            complaints.forEach(c => {
+                catMap[c.category] = (catMap[c.category] || 0) + 1;
+                statMap[c.status] = (statMap[c.status] || 0) + 1;
+            });
+            result = {
+                data_type: "live",
+                kpis: {
+                    total_complaints: total,
+                    open_complaints: open,
+                    resolved_complaints: resolved,
+                    resolution_rate_percent: total ? Math.round((resolved / total) * 100) : 0,
+                    records_with_gps: gps
+                },
+                categories: Object.entries(catMap).map(([category, count]) => ({ category, complaints: count })),
+                statuses: Object.entries(statMap).map(([status, count]) => ({ status, complaints: count })),
+                monthly: []
+            };
+        } catch (err3) {
+            console.error("Dashboard calculation failed completely:", err3);
         }
     }
 
     if (!result || !result.kpis) {
         ["kpiTotal", "kpiOpen", "kpiResolved", "kpiRate", "kpiMonth", "kpiGeo"].forEach(id => {
-            if ($(id)) $(id).textContent = "Unavailable";
+            if ($(id)) $(id).textContent = "—";
         });
         const notice = $("demoNotice");
         notice?.remove();
@@ -608,15 +1069,15 @@ async function loadMapLayers() {
             }
         });
 
-        // Load the 369 GBA ward polygons.
+        // Load the 369 GBA ward polygons as subtle background context.
         const wards = await api("/api/geo/wards");
 
         wardLayer = L.geoJSON(wards, {
             style: {
                 color: "#287451",
-                weight: 1,
+                weight: 0.8,
                 fillColor: "#8ab69a",
-                fillOpacity: 0.08
+                fillOpacity: 0.04
             },
             onEachFeature: (feature, layer) => {
                 const p = feature.properties || {};
@@ -630,59 +1091,8 @@ async function loadMapLayers() {
             }
         }).addTo(adminMap);
 
-        // Load historical complaint coordinates.
-        const geo = await api("/api/dashboard/historical/geo");
-
-        const renderer = L.canvas({ padding: 0.5 });
-
-        historicalLayer = L.layerGroup();
-
-        // Limit visible markers to maintain browser performance.
-        const points = geo.points;
-        const maxMarkers = 4000;
-        const step = Math.max(1, Math.ceil(points.length / maxMarkers));
-
-        points.forEach((p, index) => {
-            if (index % step !== 0) return;
-
-            if (!Number.isFinite(p.latitude) ||
-                !Number.isFinite(p.longitude)) return;
-
-            L.circleMarker(
-                [p.latitude, p.longitude],
-                {
-                    renderer,
-                    radius: 3,
-                    color: "#C47A31",
-                    fillColor: "#E5A45E",
-                    fillOpacity: 0.65,
-                    weight: 1
-                }
-            ).bindPopup(`
-                <strong>Historical complaint</strong><br>
-                ${escapeHtml(p.category_title)}<br>
-                Ward: ${escapeHtml(p.ward_title)}<br>
-                Status: ${escapeHtml(p.complaint_status_title)}
-            `).addTo(historicalLayer);
-        });
-
-        historicalLayer.addTo(adminMap);
-
-        const bounds = wardLayer.getBounds();
-
-        if (bounds.isValid()) {
-            adminMap.fitBounds(bounds, { padding: [15, 15] });
-        }
-
-        const mapNote = document.querySelector(".map-panel .muted");
-
-        if (mapNote) {
-            mapNote.textContent =
-                `GBA 2025 ward boundaries · ${geo.total_points.toLocaleString("en-IN")} historical GPS records · ${Math.min(maxMarkers, points.length).toLocaleString("en-IN")} sampled map markers displayed.`;
-        }
-
     } catch (error) {
-        console.error("Map loading error:", error);
+        console.warn("Ward boundaries error:", error);
     }
 }
 
@@ -729,6 +1139,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initCitizen();
     initAdmin();
     initTracking();
+    if (typeof closeLightbox === "function") closeLightbox();
 });
 
 const TRACK_STAGES = [
@@ -878,6 +1289,10 @@ let modalMarkers = [];
 
 async function loadConsolidatedGroups() {
     try {
+        await loadPrioritySummary();
+        await loadPriorityQueue();
+        await loadPriorityMapPoints();
+
         const res = await api("/api/groups");
         cachedGroups = res.groups || [];
 
@@ -888,15 +1303,10 @@ async function loadConsolidatedGroups() {
         if ($("kpiGroupsSub")) {
             $("kpiGroupsSub").textContent = `${res.total_citizens || 0} citizens in ${res.multi_report_groups || 0} clusters`;
         }
-        if ($("clusterSummaryPill")) {
-            $("clusterSummaryPill").textContent = `${res.total_groups || 0} Consolidated Issues · ${res.total_citizens || 0} Citizens Reporting · ${res.multi_report_groups || 0} Multi-Report Clusters`;
-        }
 
         filterAndRenderConsolidated();
     } catch (e) {
-        if ($("consolidatedCards")) {
-            $("consolidatedCards").innerHTML = `<div class="empty-state">Could not load consolidated issues: ${escapeHtml(e.message)}</div>`;
-        }
+        console.warn("Could not load consolidated groups:", e);
     }
 }
 
@@ -1046,6 +1456,39 @@ window.openGroupDetails = async function(gid) {
         $("modalDepartmentInput").value = group.assigned_department || "";
         $("modalOfficerInput").value = group.assigned_officer || "";
         $("modalRemarksInput").value = "";
+
+        // Priority inspection card & override
+        const pClass = (group.priority || "Medium").toLowerCase();
+        if ($("modalPriorityCard")) {
+            $("modalPriorityCard").className = `modal-section-card priority-inspection-card tier-${pClass}`;
+        }
+        if ($("modalPriorityBadge")) {
+            $("modalPriorityBadge").className = `priority-badge priority-badge-${pClass}`;
+            $("modalPriorityBadge").textContent = `${group.priority} · Score ${group.priority_score ?? 0}`;
+        }
+        if ($("modalPriorityReason")) {
+            $("modalPriorityReason").textContent = group.priority_reason || "Evaluated by AI multi-factor priority engine.";
+        }
+        const factorsGrid = $("modalPriorityFactorsGrid");
+        if (factorsGrid) {
+            const factors = group.priority_factors || {};
+            const chips = [];
+            if (factors.hazard_type) chips.push(`<span class="factor-chip">🚨 Hazard: <strong>${escapeHtml(factors.hazard_type)}</strong></span>`);
+            if (factors.citizen_count) chips.push(`<span class="factor-chip">👥 Reports: <strong>${factors.citizen_count} citizens (+${factors.citizen_multiplier || 0} pts)</strong></span>`);
+            if (factors.days_open !== undefined) chips.push(`<span class="factor-chip">⏳ Age: <strong>${factors.days_open} days open (+${factors.age_escalation || 0} pts)</strong></span>`);
+            if (factors.infrastructure_context) chips.push(`<span class="factor-chip">🏥 Proximity: <strong>${escapeHtml(factors.infrastructure_context)} (+${factors.infra_bonus || 0} pts)</strong></span>`);
+            if (group.priority_override) chips.push(`<span class="factor-chip" style="background:#fff3e0;border-color:#ffcc80;">⚙️ <strong>Manually Overridden</strong> (${escapeHtml(group.priority_override_by || 'Admin')})</span>`);
+            factorsGrid.innerHTML = chips.join("") || `<span class="factor-chip">Standard issue profile</span>`;
+        }
+        if ($("modalPriorityOverrideSelect")) {
+            $("modalPriorityOverrideSelect").value = group.priority || "Medium";
+        }
+        if ($("modalPriorityReasonInput")) {
+            $("modalPriorityReasonInput").value = "";
+        }
+        if ($("priorityOverrideStatus")) {
+            $("priorityOverrideStatus").textContent = "";
+        }
 
         // Linked count
         $("modalLinkedCount").textContent = (group.complaints || []).length;

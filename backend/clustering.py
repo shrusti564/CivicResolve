@@ -16,6 +16,7 @@ try:
         link_complaint_to_group,
         update_group_info
     )
+    from .priority import evaluate_issue_priority
 except (ImportError, ValueError):
     from database import (
         connect,
@@ -26,6 +27,7 @@ except (ImportError, ValueError):
         link_complaint_to_group,
         update_group_info
     )
+    from priority import evaluate_issue_priority
 
 _clustering_lock = threading.RLock()
 
@@ -397,7 +399,32 @@ def process_complaint_clustering(complaint_id):
                 updated_group["address"],
                 linked_complaints
             )
-            update_group_info(group_id, title=title, summary=summary)
+
+            # Re-evaluate priority if not manually overridden by admin
+            if updated_group.get("priority_override") != 1:
+                combined_desc = " ".join([c.get("description", "") for c in linked_complaints])
+                p_eval = evaluate_issue_priority(
+                    title=title,
+                    description=combined_desc,
+                    category=updated_group["category"],
+                    complaints_count=len(linked_complaints),
+                    first_reported_at=updated_group.get("first_reported_at"),
+                    address=updated_group.get("address", ""),
+                    ward_name=updated_group.get("ward_name", ""),
+                    status=updated_group.get("status", "Submitted")
+                )
+                update_group_info(
+                    group_id,
+                    title=title,
+                    summary=summary,
+                    priority=p_eval["priority"],
+                    priority_score=p_eval["priority_score"],
+                    priority_reason=p_eval["priority_reason"],
+                    priority_factors=p_eval["priority_factors"]
+                )
+            else:
+                update_group_info(group_id, title=title, summary=summary)
+
             return get_complaint_group(group_id)
         else:
             # Create a brand new group
@@ -411,6 +438,17 @@ def process_complaint_clustering(complaint_id):
                 [complaint]
             )
 
+            p_eval = evaluate_issue_priority(
+                title=title,
+                description=complaint.get("description", ""),
+                category=complaint["category"],
+                complaints_count=1,
+                first_reported_at=now,
+                address=complaint.get("address", ""),
+                ward_name=complaint.get("ward_name", ""),
+                status=complaint.get("status", "Submitted")
+            )
+
             group_data = {
                 "reference": ref,
                 "title": title,
@@ -422,7 +460,11 @@ def process_complaint_clustering(complaint_id):
                 "latitude": complaint.get("latitude"),
                 "longitude": complaint.get("longitude"),
                 "status": complaint.get("status", "Submitted"),
-                "priority": complaint.get("priority", "Medium"),
+                "priority": p_eval["priority"],
+                "priority_score": p_eval["priority_score"],
+                "priority_reason": p_eval["priority_reason"],
+                "priority_factors": p_eval["priority_factors"],
+                "priority_override": 0,
                 "complaints_count": 1,
                 "first_reported_at": now,
                 "last_reported_at": now

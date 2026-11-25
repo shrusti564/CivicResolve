@@ -1,6 +1,7 @@
 import sqlite3
+import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "data" / "civicresolve.db"
@@ -54,6 +55,10 @@ def init_db():
         cols = [r['name'] for r in c.execute('PRAGMA table_info(complaints)').fetchall()]
         if 'image_analysis' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN image_analysis TEXT')
         if 'group_id' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN group_id INTEGER REFERENCES complaint_groups(id)')
+        if 'priority_score' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN priority_score INTEGER DEFAULT 50')
+        if 'priority_reason' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN priority_reason TEXT')
+        if 'priority_factors' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN priority_factors TEXT')
+        if 'priority_override' not in cols: c.execute('ALTER TABLE complaints ADD COLUMN priority_override INTEGER DEFAULT 0')
 
         c.execute("""CREATE TABLE IF NOT EXISTS complaint_groups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,6 +73,13 @@ def init_db():
             longitude REAL,
             status TEXT DEFAULT 'Submitted',
             priority TEXT DEFAULT 'Medium',
+            priority_score INTEGER DEFAULT 50,
+            priority_reason TEXT,
+            priority_factors TEXT,
+            priority_override INTEGER DEFAULT 0,
+            priority_override_reason TEXT,
+            priority_override_by TEXT,
+            priority_override_at TEXT,
             assigned_department TEXT,
             assigned_officer TEXT,
             complaints_count INTEGER DEFAULT 1,
@@ -76,6 +88,15 @@ def init_db():
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )""")
+
+        cols_groups = [r['name'] for r in c.execute('PRAGMA table_info(complaint_groups)').fetchall()]
+        if 'priority_score' not in cols_groups: c.execute('ALTER TABLE complaint_groups ADD COLUMN priority_score INTEGER DEFAULT 50')
+        if 'priority_reason' not in cols_groups: c.execute('ALTER TABLE complaint_groups ADD COLUMN priority_reason TEXT')
+        if 'priority_factors' not in cols_groups: c.execute('ALTER TABLE complaint_groups ADD COLUMN priority_factors TEXT')
+        if 'priority_override' not in cols_groups: c.execute('ALTER TABLE complaint_groups ADD COLUMN priority_override INTEGER DEFAULT 0')
+        if 'priority_override_reason' not in cols_groups: c.execute('ALTER TABLE complaint_groups ADD COLUMN priority_override_reason TEXT')
+        if 'priority_override_by' not in cols_groups: c.execute('ALTER TABLE complaint_groups ADD COLUMN priority_override_by TEXT')
+        if 'priority_override_at' not in cols_groups: c.execute('ALTER TABLE complaint_groups ADD COLUMN priority_override_at TEXT')
 
         c.execute("""CREATE TABLE IF NOT EXISTS citizen_notifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,15 +127,48 @@ def init_db():
         c.commit()
 
 
+def _calc_days_unresolved(reported_at, status):
+    if not reported_at or status in ("Resolved", "Rejected"):
+        return 0
+    try:
+        clean = reported_at.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean)
+        delta = datetime.now(timezone.utc) - dt
+        return max(0, delta.days)
+    except Exception:
+        return 0
+
+
+def _format_group_data(g):
+    if not g:
+        return None
+    factors = g.get('priority_factors')
+    if isinstance(factors, str):
+        try:
+            g['priority_factors'] = json.loads(factors)
+        except Exception:
+            g['priority_factors'] = {}
+    elif not factors:
+        g['priority_factors'] = {}
+
+    g['days_unresolved'] = _calc_days_unresolved(g.get('first_reported_at'), g.get('status'))
+    return g
+
+
 def create_complaint(data):
-    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    factors = data.get('priority_factors')
+    factors_json = json.dumps(factors) if isinstance(factors, dict) else (factors or None)
+
     with connect() as c:
         cur = c.execute("""INSERT INTO complaints
-            (reference,title,description,category,priority,status,latitude,longitude,address,ward_name,corporation,location_source,image_path,image_analysis,created_at,updated_at,group_id)
-            VALUES (?,?,?,?,?,'Submitted',?,?,?,?,?,?,?,?,?,?,?)""",
-            (data['reference'], data['title'], data['description'], data['category'], data.get('priority','Medium'),
+            (reference,title,description,category,priority,priority_score,priority_reason,priority_factors,priority_override,status,latitude,longitude,address,ward_name,corporation,location_source,image_path,image_analysis,created_at,updated_at,group_id)
+            VALUES (?,?,?,?,?,?,?,?,?,'Submitted',?,?,?,?,?,?,?,?,?,?,?)""",
+            (data['reference'], data['title'], data['description'], data['category'],
+             data.get('priority', 'Medium'), data.get('priority_score', 50), data.get('priority_reason'),
+             factors_json, data.get('priority_override', 0),
              data.get('latitude'), data.get('longitude'), data.get('address'), data.get('ward_name'), data.get('corporation'),
-             data.get('location_source','manual'), data.get('image_path'), data.get('image_analysis'), now, now, data.get('group_id')))
+             data.get('location_source', 'manual'), data.get('image_path'), data.get('image_analysis'), now, now, data.get('group_id')))
         c.execute("""INSERT INTO complaint_status_history
             (complaint_id, previous_status, new_status, remarks, updated_by, created_at)
             VALUES (?, NULL, 'Submitted', NULL, ?, ?)""", (cur.lastrowid, 'Citizen', now))
@@ -125,12 +179,27 @@ def create_complaint(data):
 def get_complaint_by_id(cid):
     with connect() as c:
         row = c.execute("SELECT * FROM complaints WHERE id=?", (cid,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        item = dict(row)
+        factors = item.get('priority_factors')
+        if isinstance(factors, str):
+            try: item['priority_factors'] = json.loads(factors)
+            except Exception: item['priority_factors'] = {}
+        item['days_unresolved'] = _calc_days_unresolved(item.get('created_at'), item.get('status'))
+        return item
 
 
 def list_complaints():
     with connect() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM complaints ORDER BY created_at DESC").fetchall()]
+        rows = [dict(r) for r in c.execute("SELECT * FROM complaints ORDER BY created_at DESC").fetchall()]
+        for r in rows:
+            factors = r.get('priority_factors')
+            if isinstance(factors, str):
+                try: r['priority_factors'] = json.loads(factors)
+                except Exception: r['priority_factors'] = {}
+            r['days_unresolved'] = _calc_days_unresolved(r.get('created_at'), r.get('status'))
+        return rows
 
 
 def update_status(cid, status, remarks=None, updated_by='Admin'):
@@ -163,11 +232,14 @@ def get_status_history(cid):
 
 
 def create_complaint_group(data):
-    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    factors = data.get('priority_factors')
+    factors_json = json.dumps(factors) if isinstance(factors, dict) else (factors or None)
+
     with connect() as c:
         cur = c.execute("""INSERT INTO complaint_groups
-            (reference, title, summary, category, ward_name, corporation, address, latitude, longitude, status, priority, assigned_department, assigned_officer, complaints_count, first_reported_at, last_reported_at, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (reference, title, summary, category, ward_name, corporation, address, latitude, longitude, status, priority, priority_score, priority_reason, priority_factors, priority_override, assigned_department, assigned_officer, complaints_count, first_reported_at, last_reported_at, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data['reference'],
                 data['title'],
@@ -180,6 +252,10 @@ def create_complaint_group(data):
                 data.get('longitude'),
                 data.get('status', 'Submitted'),
                 data.get('priority', 'Medium'),
+                data.get('priority_score', 50),
+                data.get('priority_reason'),
+                factors_json,
+                data.get('priority_override', 0),
                 data.get('assigned_department'),
                 data.get('assigned_officer'),
                 data.get('complaints_count', 1),
@@ -200,11 +276,18 @@ def get_complaint_group(gid):
             return None
         group = dict(row)
         complaints = [dict(r) for r in c.execute("SELECT * FROM complaints WHERE group_id=? ORDER BY created_at ASC", (gid,)).fetchall()]
+        for comp in complaints:
+            f = comp.get('priority_factors')
+            if isinstance(f, str):
+                try: comp['priority_factors'] = json.loads(f)
+                except Exception: comp['priority_factors'] = {}
+            comp['days_unresolved'] = _calc_days_unresolved(comp.get('created_at'), comp.get('status'))
+
         group['complaints'] = complaints
         group['complaints_count'] = len(complaints) if complaints else group['complaints_count']
         group['linked_complaint_ids'] = [r['id'] for r in complaints]
         group['linked_references'] = [r['reference'] for r in complaints]
-        return group
+        return _format_group_data(group)
 
 
 def get_complaint_group_by_reference(ref):
@@ -215,21 +298,45 @@ def get_complaint_group_by_reference(ref):
         return get_complaint_group(row['id'])
 
 
-def list_complaint_groups(status=None, category=None, search=None):
+def list_complaint_groups(status=None, category=None, priority=None, ward=None, search=None, sort_by_priority=False):
     with connect() as c:
         query = "SELECT * FROM complaint_groups WHERE 1=1"
         params = []
         if status:
-            query += " AND status = ?"
-            params.append(status)
+            if status == "Unresolved":
+                query += " AND status NOT IN ('Resolved', 'Rejected')"
+            else:
+                query += " AND status = ?"
+                params.append(status)
         if category:
             query += " AND category = ?"
             params.append(category)
+        if priority:
+            query += " AND priority = ?"
+            params.append(priority)
+        if ward:
+            query += " AND ward_name = ?"
+            params.append(ward)
         if search:
             query += " AND (title LIKE ? OR summary LIKE ? OR ward_name LIKE ? OR address LIKE ? OR reference LIKE ?)"
             s = f"%{search}%"
             params.extend([s, s, s, s, s])
-        query += " ORDER BY last_reported_at DESC, id DESC"
+
+        if sort_by_priority:
+            query += """ ORDER BY 
+                CASE priority 
+                    WHEN 'Critical' THEN 1 
+                    WHEN 'High' THEN 2 
+                    WHEN 'Medium' THEN 3 
+                    WHEN 'Low' THEN 4 
+                    ELSE 5 
+                END, 
+                priority_score DESC, 
+                first_reported_at ASC,
+                id DESC"""
+        else:
+            query += " ORDER BY last_reported_at DESC, id DESC"
+
         rows = [dict(r) for r in c.execute(query, params).fetchall()]
 
         for r in rows:
@@ -237,7 +344,88 @@ def list_complaint_groups(status=None, category=None, search=None):
             r['complaints_count'] = len(linked)
             r['linked_references'] = [x['reference'] for x in linked]
             r['linked_complaint_ids'] = [x['id'] for x in linked]
+            _format_group_data(r)
         return rows
+
+
+def get_priority_summary():
+    """
+    Returns counts of active UNRESOLVED consolidated issues by priority tier.
+    Only counts issues that are not Resolved and not Rejected.
+    """
+    with connect() as c:
+        group_rows = c.execute("""
+            SELECT priority, COUNT(*) as cnt
+            FROM complaint_groups
+            WHERE status NOT IN ('Resolved', 'Rejected')
+            GROUP BY priority
+        """).fetchall()
+
+        group_counts = {r['priority']: r['cnt'] for r in group_rows}
+        critical = group_counts.get('Critical', 0)
+        high = group_counts.get('High', 0)
+        medium = group_counts.get('Medium', 0)
+        low = group_counts.get('Low', 0)
+        total_unresolved = critical + high + medium + low
+
+        resolved_count = c.execute("SELECT COUNT(*) FROM complaint_groups WHERE status = 'Resolved'").fetchone()[0]
+        total_groups = c.execute("SELECT COUNT(*) FROM complaint_groups").fetchone()[0]
+        total_citizens = c.execute("SELECT COUNT(*) FROM complaints").fetchone()[0]
+
+        return {
+            "critical": critical,
+            "high": high,
+            "medium": medium,
+            "low": low,
+            "total_unresolved": total_unresolved,
+            "total_resolved": resolved_count,
+            "total_groups": total_groups,
+            "total_citizens": total_citizens
+        }
+
+
+def update_group_priority(gid, priority, reason=None, updated_by='Admin'):
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    allowed = {'Critical', 'High', 'Medium', 'Low'}
+    if priority not in allowed:
+        raise ValueError(f"Invalid priority: {priority}")
+
+    tier_scores = {'Critical': 90, 'High': 75, 'Medium': 50, 'Low': 25}
+    score = tier_scores.get(priority, 50)
+
+    with connect() as c:
+        grp = c.execute("SELECT * FROM complaint_groups WHERE id=?", (gid,)).fetchone()
+        if not grp:
+            return None
+        grp = dict(grp)
+        prev_priority = grp['priority']
+        override_reason = reason or f"Priority manually overridden to {priority} by {updated_by}"
+
+        c.execute("""
+            UPDATE complaint_groups
+            SET priority=?, priority_score=?, priority_override=1, priority_override_reason=?,
+                priority_override_by=?, priority_override_at=?, priority_reason=?, updated_at=?
+            WHERE id=?
+        """, (priority, score, override_reason, updated_by, now, override_reason, now, gid))
+
+        c.execute("""
+            UPDATE complaints
+            SET priority=?, priority_score=?, priority_override=1, priority_reason=?, updated_at=?
+            WHERE group_id=?
+        """, (priority, score, override_reason, now, gid))
+
+        linked = c.execute("SELECT id, reference FROM complaints WHERE group_id=?", (gid,)).fetchall()
+        for comp in linked:
+            c.execute("""
+                INSERT INTO citizen_notifications
+                (complaint_id, complaint_reference, group_id, group_reference, notification_type, title, message, status, sent_at)
+                VALUES (?, ?, ?, ?, 'priority_changed', ?, ?, 'Delivered', ?)
+            """, (comp['id'], comp['reference'], gid, grp['reference'],
+                  f"Priority Escalation: {priority}",
+                  f"Consolidated issue '{grp['title']}' priority updated from {prev_priority} to {priority}. Reason: {override_reason}",
+                  now))
+        c.commit()
+        return get_complaint_group(gid)
 
 
 def get_complaints_by_group_id(gid):
@@ -321,8 +509,8 @@ def update_group_status(gid, status, remarks=None, updated_by='Admin', assigned_
         return get_complaint_group(gid)
 
 
-def update_group_info(gid, title=None, summary=None, priority=None):
-    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+def update_group_info(gid, title=None, summary=None, priority=None, priority_score=None, priority_reason=None, priority_factors=None):
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connect() as c:
         fields = ["updated_at=?"]
         params = [now]
@@ -335,6 +523,15 @@ def update_group_info(gid, title=None, summary=None, priority=None):
         if priority:
             fields.append("priority=?")
             params.append(priority)
+        if priority_score is not None:
+            fields.append("priority_score=?")
+            params.append(priority_score)
+        if priority_reason is not None:
+            fields.append("priority_reason=?")
+            params.append(priority_reason)
+        if priority_factors is not None:
+            fields.append("priority_factors=?")
+            params.append(json.dumps(priority_factors) if isinstance(priority_factors, dict) else priority_factors)
         params.append(gid)
         c.execute(f"UPDATE complaint_groups SET {', '.join(fields)} WHERE id=?", params)
         c.commit()

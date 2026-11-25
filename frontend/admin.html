@@ -24,9 +24,9 @@
   <main class="dashboard-wrap">
     <section class="dash-title">
       <div>
-        <div class="eyebrow">OPERATIONS OVERVIEW / BENGALURU</div>
+        <div class="eyebrow">COMMAND CENTER / BENGALURU</div>
         <h1>Civic intelligence <em>dashboard.</em></h1>
-        <p>Monitor incoming issues, duplicate clustering, location coverage and resolution progress.</p>
+        <p>Intelligent priority-based civic incident management, automated clustering, and geospatial emergency dispatch.</p>
       </div>
       <div class="dash-actions">
         <button class="btn btn-outline" id="refreshBtn">↻ Refresh data</button>
@@ -36,6 +36,162 @@
 
     <div id="demoNotice" class="demo-notice hidden">DEMO DATA · Dashboard KPIs use synthetic starter rows until real citizen submissions are recorded.</div>
 
+    <!-- 1. TOP PRIORITY SUMMARY CARDS (4 TIERS) -->
+    <section class="priority-kpi-grid">
+      <article class="priority-card card-critical" id="cardFilterCritical" onclick="togglePriorityFilter('Critical')">
+        <div class="priority-card-top">
+          <span class="priority-indicator-dot pulse-red"></span>
+          <span class="priority-tier-label">CRITICAL ISSUES</span>
+        </div>
+        <strong id="countCritical" class="priority-stat-count">0</strong>
+        <div class="priority-stat-sub">Immediate public safety or infrastructure threat</div>
+        <div class="priority-card-bar"><span id="barCritical" style="width: 0%"></span></div>
+      </article>
+
+      <article class="priority-card card-high" id="cardFilterHigh" onclick="togglePriorityFilter('High')">
+        <div class="priority-card-top">
+          <span class="priority-indicator-dot dot-orange"></span>
+          <span class="priority-tier-label">HIGH PRIORITY</span>
+        </div>
+        <strong id="countHigh" class="priority-stat-count">0</strong>
+        <div class="priority-stat-sub">Multi-citizen reports & service disruptions</div>
+        <div class="priority-card-bar"><span id="barHigh" style="width: 0%"></span></div>
+      </article>
+
+      <article class="priority-card card-medium" id="cardFilterMedium" onclick="togglePriorityFilter('Medium')">
+        <div class="priority-card-top">
+          <span class="priority-indicator-dot dot-yellow"></span>
+          <span class="priority-tier-label">MEDIUM PRIORITY</span>
+        </div>
+        <strong id="countMedium" class="priority-stat-count">0</strong>
+        <div class="priority-stat-sub">Requires attention without immediate hazard</div>
+        <div class="priority-card-bar"><span id="barMedium" style="width: 0%"></span></div>
+      </article>
+
+      <article class="priority-card card-low" id="cardFilterLow" onclick="togglePriorityFilter('Low')">
+        <div class="priority-card-top">
+          <span class="priority-indicator-dot dot-green"></span>
+          <span class="priority-tier-label">LOW PRIORITY</span>
+        </div>
+        <strong id="countLow" class="priority-stat-count">0</strong>
+        <div class="priority-stat-sub">Minor routine maintenance requests</div>
+        <div class="priority-card-bar"><span id="barLow" style="width: 0%"></span></div>
+      </article>
+    </section>
+
+    <!-- 2. CENTRAL INTERACTIVE PRIORITY-BASED MAP -->
+    <section class="panel command-map-panel">
+      <div class="panel-head">
+        <div>
+          <div class="cluster-badge-row">
+            <span class="step">INCIDENT COMMAND MAP</span>
+            <span class="command-live-pill" id="mapStatusPill">Active Monitoring</span>
+          </div>
+          <h3>Priority Civic Incident Map</h3>
+          <p>Real-time geospatial priority distribution: color-coded emergency pins, cluster counts, and area concentration heatmap.</p>
+        </div>
+        <div class="map-controls-row">
+          <button id="toggleHeatmapBtn" class="btn btn-outline btn-sm" type="button" title="Toggle Density Heatmap">🌡️ Toggle Heatmap</button>
+          <button id="focusCriticalBtn" class="btn btn-outline btn-sm" type="button" title="Zoom to Critical Issues">🎯 Focus Critical</button>
+          <button id="resetMapBtn" class="btn btn-outline btn-sm" type="button" title="Reset View">↺ Reset Map</button>
+        </div>
+      </div>
+
+      <!-- Map & Queue Filters Bar -->
+      <div class="command-filters-bar">
+        <div class="priority-pill-selector">
+          <button class="priority-tab-btn active" id="tabAll" onclick="setPriorityFilter('')" type="button">All (<span id="pillCountAll">0</span>)</button>
+          <button class="priority-tab-btn btn-tab-critical" id="tabCritical" onclick="setPriorityFilter('Critical')" type="button">🔴 Critical (<span id="pillCountCritical">0</span>)</button>
+          <button class="priority-tab-btn btn-tab-high" id="tabHigh" onclick="setPriorityFilter('High')" type="button">🟠 High (<span id="pillCountHigh">0</span>)</button>
+          <button class="priority-tab-btn btn-tab-medium" id="tabMedium" onclick="setPriorityFilter('Medium')" type="button">🟡 Medium (<span id="pillCountMedium">0</span>)</button>
+          <button class="priority-tab-btn btn-tab-low" id="tabLow" onclick="setPriorityFilter('Low')" type="button">🟢 Low (<span id="pillCountLow">0</span>)</button>
+        </div>
+
+        <div class="command-filter-inputs">
+          <select id="mapCategoryFilter" class="filter-select">
+            <option value="">All Categories</option>
+            <option>Roads & potholes</option>
+            <option>Garbage & waste</option>
+            <option>Streetlights</option>
+            <option>Drainage & flooding</option>
+            <option>Water supply</option>
+            <option>Other</option>
+          </select>
+          <select id="mapStatusFilter" class="filter-select">
+            <option value="Unresolved" selected>Unresolved (Active)</option>
+            <option value="">All Statuses</option>
+            <option value="Submitted">Submitted</option>
+            <option value="Under Review">Under Review</option>
+            <option value="In Progress">In Progress</option>
+            <option value="Resolved">Resolved</option>
+          </select>
+          <input id="mapSearchInput" class="search-input" placeholder="Search issues, wards, ref...">
+        </div>
+      </div>
+
+      <!-- Map Canvas & Floating Legend -->
+      <div class="map-wrapper">
+        <div id="adminMap" class="command-map"></div>
+        <div class="map-floating-legend">
+          <div class="legend-title">PRIORITY TIERS</div>
+          <div class="legend-item"><span class="legend-color-dot dot-critical"></span><strong>Critical</strong> (Life Safety)</div>
+          <div class="legend-item"><span class="legend-color-dot dot-high"></span><strong>High</strong> (Service Disruption)</div>
+          <div class="legend-item"><span class="legend-color-dot dot-medium"></span><strong>Medium</strong> (Attention Needed)</div>
+          <div class="legend-item"><span class="legend-color-dot dot-low"></span><strong>Low</strong> (Routine Task)</div>
+          <div class="legend-item"><span class="legend-badge">👥 7</span><span>Multi-citizen cluster</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. PRIORITY DISPATCH QUEUE & CONSOLIDATED ISSUES -->
+    <section class="panel priority-queue-panel" id="priorityQueueSection">
+      <div class="panel-head">
+        <div>
+          <div class="cluster-badge-row">
+            <span class="step">OPERATIONS QUEUE</span>
+            <span class="cluster-summary-pill" id="clusterSummaryPill">Loading cluster intelligence...</span>
+          </div>
+          <h3>Priority Issue Queue</h3>
+          <p>Ranked in strict descending urgency order by hazard severity, affected citizen count, infrastructure sensitivity, and days open.</p>
+        </div>
+        <div class="queue-toolbar">
+          <div class="view-switchers">
+            <button class="toggle-btn active" id="viewQueueTableBtn" type="button">Queue Table</button>
+            <button class="toggle-btn" id="viewQueueCardsBtn" type="button">Cards Grid</button>
+          </div>
+          <button class="btn btn-outline btn-sm" id="reclusterBtn" title="Re-cluster complaints">↺ Re-cluster</button>
+        </div>
+      </div>
+
+      <!-- Queue Table View -->
+      <div class="table-scroll" id="queueTableView">
+        <table class="priority-table">
+          <thead>
+            <tr>
+              <th>Priority & Score</th>
+              <th>Issue ID</th>
+              <th>Issue Title & Summary</th>
+              <th>Category</th>
+              <th>Location / Ward</th>
+              <th>Affected Citizens</th>
+              <th>Days Open</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="priorityQueueRows">
+            <tr><td colspan="9" class="empty-state">Loading priority queue…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Queue Cards View -->
+      <div class="consolidated-grid hidden" id="queueCardsView">
+        <div class="empty-state">Loading consolidated issues…</div>
+      </div>
+    </section>
+
+    <!-- 4. GENERAL KPIS & HISTORICAL ANALYTICS -->
     <section class="kpi-grid">
       <article class="kpi-card">
         <span>Total complaints</span>
@@ -73,71 +229,6 @@
         <small>With coordinates</small>
         <b class="kpi-symbol">⌖</b>
       </article>
-    </section>
-
-    <!-- SECTION: CONSOLIDATED ISSUES (DUPLICATE COMPLAINT CLUSTERING) -->
-    <section class="panel consolidated-panel" id="consolidatedIssuesSection">
-      <div class="panel-head">
-        <div>
-          <div class="cluster-badge-row">
-            <span class="step">AI CLUSTER INTELLIGENCE</span>
-            <span class="cluster-summary-pill" id="clusterSummaryPill">Loading cluster intelligence...</span>
-          </div>
-          <h3>Consolidated Issues</h3>
-          <p>Automated semantic & geographic duplicate clustering groups multiple citizen complaints into single actionable issues.</p>
-        </div>
-        <div class="consolidated-toolbar">
-          <input id="groupSearch" class="search-input" placeholder="Search issues, wards, ref...">
-          <select id="groupCategoryFilter" class="filter-select">
-            <option value="">All categories</option>
-            <option>Roads & potholes</option>
-            <option>Garbage & waste</option>
-            <option>Streetlights</option>
-            <option>Drainage & flooding</option>
-            <option>Water supply</option>
-            <option>Other</option>
-          </select>
-          <select id="groupStatusFilter" class="filter-select">
-            <option value="">All statuses</option>
-            <option>Submitted</option>
-            <option>Under Review</option>
-            <option>In Progress</option>
-            <option>Resolved</option>
-            <option>Rejected</option>
-          </select>
-          <div class="view-switchers">
-            <button class="toggle-btn active" id="viewCardsBtn" type="button" title="Card View">Cards</button>
-            <button class="toggle-btn" id="viewTableBtn" type="button" title="Table View">Table</button>
-          </div>
-          <button class="btn btn-outline btn-sm" id="reclusterBtn" title="Re-cluster complaints">↺ Re-cluster</button>
-        </div>
-      </div>
-
-      <!-- Cards Grid View -->
-      <div class="consolidated-grid" id="consolidatedCards">
-        <div class="empty-state">Loading consolidated issues…</div>
-      </div>
-
-      <!-- Table View -->
-      <div class="table-scroll hidden" id="consolidatedTableView">
-        <table class="consolidated-table">
-          <thead>
-            <tr>
-              <th>Issue ID</th>
-              <th>Consolidated Issue</th>
-              <th>Category</th>
-              <th>Location / Ward</th>
-              <th>Affected Citizens</th>
-              <th>Timeline</th>
-              <th>Status</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="consolidatedTableRows">
-            <tr><td colspan="8" class="empty-state">Loading consolidated issues…</td></tr>
-          </tbody>
-        </table>
-      </div>
     </section>
 
     <section class="charts-grid">
@@ -186,17 +277,10 @@
       </div>
     </section>
 
-    <section class="lower-grid">
-      <article class="panel map-panel">
-        <div class="panel-head"><div><span class="step">GEO INTELLIGENCE</span><h3>Complaint locations</h3></div></div>
-        <div id="adminMap" class="map admin-map"></div>
-        <p class="muted tiny">Pins show submitted GPS coordinates only. Ward polygons appear after the GBA 2025 GeoJSON is downloaded.</p>
-      </article>
-      <article class="panel dataset-panel">
-        <div class="panel-head"><div><span class="step">PUBLIC DATA</span><h3>Bengaluru dataset library</h3></div></div>
-        <div id="datasetList" class="dataset-list">Loading dataset inventory…</div>
-        <a class="text-link" href="https://data.opencity.in/" target="_blank" rel="noopener">OpenCity data portal ↗</a>
-      </article>
+    <section class="panel dataset-panel" style="margin-bottom: 24px;">
+      <div class="panel-head"><div><span class="step">PUBLIC DATA</span><h3>Bengaluru dataset library</h3></div></div>
+      <div id="datasetList" class="dataset-list">Loading dataset inventory…</div>
+      <a class="text-link" href="https://data.opencity.in/" target="_blank" rel="noopener">OpenCity data portal ↗</a>
     </section>
 
     <footer>
@@ -255,6 +339,31 @@
             <span class="ai-pill">✨ Auto-Synthesized</span>
           </div>
           <p id="modalGroupSummary" class="ai-summary-text">—</p>
+        </div>
+
+        <!-- AI Priority Classification & Inspection Card -->
+        <div class="modal-section-card priority-inspection-card" id="modalPriorityCard">
+          <div class="card-subtitle-row">
+            <span class="step">AI PRIORITY CLASSIFICATION & URGENCY</span>
+            <span id="modalPriorityBadge" class="priority-badge priority-badge-critical">Critical · 95</span>
+          </div>
+          <p id="modalPriorityReason" class="priority-reason-text">—</p>
+          <div class="priority-factors-grid" id="modalPriorityFactorsGrid">
+            <!-- Populated dynamically with factor pills -->
+          </div>
+          <div class="priority-override-row">
+            <label class="override-label">Manual Priority Override
+              <select id="modalPriorityOverrideSelect">
+                <option value="Critical">🔴 Critical (Immediate Hazard)</option>
+                <option value="High">🟠 High (Service Disruption)</option>
+                <option value="Medium">🟡 Medium (Standard Maintenance)</option>
+                <option value="Low">🟢 Low (Routine Request)</option>
+              </select>
+            </label>
+            <input id="modalPriorityReasonInput" placeholder="Reason for priority override (logged in audit trail)...">
+            <button id="savePriorityOverrideBtn" class="btn btn-outline btn-sm" type="button">Override Priority</button>
+          </div>
+          <div id="priorityOverrideStatus" class="form-action-msg"></div>
         </div>
 
         <!-- Status Management & Resolution Synchronization Form -->
@@ -341,6 +450,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

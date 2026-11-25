@@ -18,10 +18,13 @@ try:
         get_complaint_group,
         list_complaint_groups,
         update_group_status,
+        update_group_priority,
+        get_priority_summary,
         get_notifications_for_complaint,
         get_notifications_for_group
     )
     from .clustering import process_complaint_clustering, cluster_all_unassigned_complaints, recluster_all_complaints
+    from .priority import evaluate_issue_priority
     from .geo import lookup_ward
     from .analytics import (
         get_dashboard_kpis,
@@ -43,10 +46,13 @@ except (ImportError, ValueError):
         get_complaint_group,
         list_complaint_groups,
         update_group_status,
+        update_group_priority,
+        get_priority_summary,
         get_notifications_for_complaint,
         get_notifications_for_group
     )
     from clustering import process_complaint_clustering, cluster_all_unassigned_complaints, recluster_all_complaints
+    from priority import evaluate_issue_priority
     from geo import lookup_ward
     from analytics import (
         get_dashboard_kpis,
@@ -122,12 +128,27 @@ def ward(latitude: float, longitude: float):
 def process_new_complaint(title: str, description: str, category: str, priority: str = 'Medium', latitude: float | None = None, longitude: float | None = None, address: str = '', location_source: str = 'manual', image_path: str | None = None, image_analysis: str | None = None):
     geo = lookup_ward(latitude, longitude) if latitude is not None else {}
     ref = 'CR-' + datetime.now().strftime('%y%m%d') + '-' + uuid.uuid4().hex[:6].upper()
+
+    # Intelligent multi-factor priority evaluation
+    p_eval = evaluate_issue_priority(
+        title=title.strip(),
+        description=description.strip(),
+        category=category,
+        complaints_count=1,
+        address=address.strip(),
+        ward_name=geo.get('ward_name', '')
+    )
+    assigned_priority = p_eval['priority']
+
     item = create_complaint({
         "reference": ref,
         "title": title.strip(),
         "description": description.strip(),
         "category": category,
-        "priority": priority,
+        "priority": assigned_priority,
+        "priority_score": p_eval['priority_score'],
+        "priority_reason": p_eval['priority_reason'],
+        "priority_factors": p_eval['priority_factors'],
         "latitude": latitude,
         "longitude": longitude,
         "address": address.strip() or None,
@@ -147,6 +168,8 @@ def process_new_complaint(title: str, description: str, category: str, priority:
         item['group_title'] = group['title']
         item['group_summary'] = group['summary']
         item['complaints_count'] = group['complaints_count']
+        item['priority'] = group.get('priority', item['priority'])
+        item['priority_score'] = group.get('priority_score', item.get('priority_score', 50))
         item['is_duplicate'] = group['complaints_count'] > 1
     return item
 
@@ -245,9 +268,27 @@ class GroupStatusUpdate(BaseModel):
     assigned_department: str | None = None
     assigned_officer: str | None = None
 
+class GroupPriorityUpdate(BaseModel):
+    priority: str
+    reason: str | None = None
+
 @app.get('/api/groups')
-def get_groups(status: str | None = None, category: str | None = None, search: str | None = None):
-    groups = list_complaint_groups(status=status, category=category, search=search)
+def get_groups(
+    status: str | None = None,
+    category: str | None = None,
+    priority: str | None = None,
+    ward: str | None = None,
+    search: str | None = None,
+    sort_by_priority: bool = False
+):
+    groups = list_complaint_groups(
+        status=status,
+        category=category,
+        priority=priority,
+        ward=ward,
+        search=search,
+        sort_by_priority=sort_by_priority
+    )
     total_citizens = sum(g.get('complaints_count', 1) for g in groups)
     multi_report_count = sum(1 for g in groups if g.get('complaints_count', 1) > 1)
     return {
@@ -256,6 +297,160 @@ def get_groups(status: str | None = None, category: str | None = None, search: s
         "total_citizens": total_citizens,
         "multi_report_groups": multi_report_count
     }
+
+@app.get('/api/priority/summary')
+def priority_summary():
+    """Returns real-time counts of unresolved issues across Critical, High, Medium, and Low."""
+    return get_priority_summary()
+
+@app.get('/api/priority/queue')
+def priority_queue(
+    status: str | None = None,
+    category: str | None = None,
+    priority: str | None = None,
+    ward: str | None = None,
+    search: str | None = None
+):
+    """
+    Returns prioritized issues queue sorted in strict descending order:
+    Critical -> High -> Medium -> Low, then by severity score and age.
+    """
+    groups = list_complaint_groups(
+        status=status,
+        category=category,
+        priority=priority,
+        ward=ward,
+        search=search,
+        sort_by_priority=True
+    )
+    summary = get_priority_summary()
+    return {
+        "queue": groups,
+        "total": len(groups),
+        "summary": summary
+    }
+
+@app.get('/api/priority/map-points')
+def priority_map_points(
+    status: str | None = None,
+    category: str | None = None,
+    priority: str | None = None,
+    ward: str | None = None,
+    search: str | None = None
+):
+    """
+    Returns geocoded consolidated issues and unclustered points for the interactive command map.
+    Consolidated duplicate complaints appear as a single clustered issue marker.
+    """
+    groups = list_complaint_groups(
+        status=status,
+        category=category,
+        priority=priority,
+        ward=ward,
+        search=search,
+        sort_by_priority=True
+    )
+
+    points = []
+    # 1. Add all consolidated groups with valid coordinates
+    for g in groups:
+        if g.get('latitude') is not None and g.get('longitude') is not None:
+            points.append({
+                "id": g['id'],
+                "group_id": g['id'],
+                "type": "consolidated",
+                "reference": g['reference'],
+                "title": g['title'],
+                "summary": g.get('summary', ''),
+                "category": g['category'],
+                "priority": g.get('priority', 'Medium'),
+                "priority_score": g.get('priority_score', 50),
+                "priority_reason": g.get('priority_reason', ''),
+                "priority_factors": g.get('priority_factors', {}),
+                "ward_name": g.get('ward_name') or 'Bengaluru',
+                "address": g.get('address') or '',
+                "latitude": float(g['latitude']),
+                "longitude": float(g['longitude']),
+                "complaints_count": g.get('complaints_count', 1),
+                "days_unresolved": g.get('days_unresolved', 0),
+                "status": g.get('status', 'Submitted'),
+                "first_reported_at": g.get('first_reported_at'),
+                "last_reported_at": g.get('last_reported_at'),
+                "assigned_department": g.get('assigned_department'),
+                "assigned_officer": g.get('assigned_officer')
+            })
+
+    # 2. Add any individual complaints that have GPS but no group
+    from .database import connect
+    with connect() as conn:
+        unassigned = conn.execute("""
+            SELECT * FROM complaints 
+            WHERE group_id IS NULL AND latitude IS NOT NULL AND longitude IS NOT NULL
+        """).fetchall()
+
+    for row in unassigned:
+        c = dict(row)
+        # Apply filters
+        if status and status != 'Unresolved' and c.get('status') != status:
+            continue
+        if status == 'Unresolved' and c.get('status') in ('Resolved', 'Rejected'):
+            continue
+        if category and c.get('category') != category:
+            continue
+        if priority and c.get('priority') != priority:
+            continue
+        if ward and c.get('ward_name') != ward:
+            continue
+
+        factors = c.get('priority_factors')
+        if isinstance(factors, str):
+            try: factors = json.loads(factors)
+            except Exception: factors = {}
+
+        points.append({
+            "id": c['id'],
+            "group_id": None,
+            "complaint_id": c['id'],
+            "type": "individual",
+            "reference": c['reference'],
+            "title": c['title'],
+            "summary": c.get('description', ''),
+            "category": c['category'],
+            "priority": c.get('priority', 'Medium'),
+            "priority_score": c.get('priority_score', 50),
+            "priority_reason": c.get('priority_reason', ''),
+            "priority_factors": factors or {},
+            "ward_name": c.get('ward_name') or 'Bengaluru',
+            "address": c.get('address') or '',
+            "latitude": float(c['latitude']),
+            "longitude": float(c['longitude']),
+            "complaints_count": 1,
+            "days_unresolved": c.get('days_unresolved', 0),
+            "status": c.get('status', 'Submitted'),
+            "first_reported_at": c.get('created_at'),
+            "last_reported_at": c.get('updated_at'),
+            "assigned_department": None,
+            "assigned_officer": None
+        })
+
+    return {
+        "points": points,
+        "total_points": len(points),
+        "critical_count": sum(1 for p in points if p['priority'] == 'Critical'),
+        "high_count": sum(1 for p in points if p['priority'] == 'High'),
+        "medium_count": sum(1 for p in points if p['priority'] == 'Medium'),
+        "low_count": sum(1 for p in points if p['priority'] == 'Low')
+    }
+
+@app.patch('/api/groups/{gid}/priority')
+def change_group_priority(gid: int, body: GroupPriorityUpdate):
+    allowed = {'Critical', 'High', 'Medium', 'Low'}
+    if body.priority not in allowed:
+        raise HTTPException(400, f"Invalid priority. Allowed: {', '.join(allowed)}")
+    updated = update_group_priority(gid, body.priority, reason=body.reason, updated_by='Admin')
+    if not updated:
+        raise HTTPException(404, 'Consolidated issue not found')
+    return updated
 
 @app.get('/api/groups/{gid}')
 def get_group(gid: int):
